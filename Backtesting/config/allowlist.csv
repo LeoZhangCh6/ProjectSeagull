@@ -1,0 +1,5 @@
+symbol,start_date,end_date,timespan,multiplier
+AAPL,2023-01-01,2023-03-31,minute,5
+MSFT,2023-01-01,2023-03-31,minute,5
+SPY,2022-09-01,2022-12-31,minute,15
+
