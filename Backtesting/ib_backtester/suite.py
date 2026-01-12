@@ -22,6 +22,113 @@ class AllowedWindow:
     multiplier: int = 1
 
 
+@dataclass(frozen=True)
+class TestTypeConfig:
+    name: str
+    trials: int
+    num_symbols: int
+    windows_per_symbol: int
+    overall_start_date: str
+    overall_end_date: str
+    seed: Optional[int] = None
+    record_curves: bool = False
+    plot_dir: Optional[str] = None
+    warmup_days: int = 14
+    trading_days: int = 14
+
+
+def _parse_bool(value: str) -> bool:
+    v = (value or "").strip().lower()
+    return v in {"1", "true", "t", "yes", "y"}
+
+
+def load_test_types_csv(path: str) -> List[TestTypeConfig]:
+    """
+    CSV columns:
+      required: name,trials,num_symbols,windows_per_symbol,overall_start_date,overall_end_date
+      optional: seed,record_curves,plot_dir,warmup_days,trading_days
+    """
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Test types CSV not found: {path}")
+    records: List[TestTypeConfig] = []
+    with open(path, "r", newline="") as f:
+        reader = csv.DictReader(f)
+        required = {"name", "trials", "num_symbols", "windows_per_symbol", "overall_start_date", "overall_end_date"}
+        missing = required - set(reader.fieldnames or [])
+        if missing:
+            raise ValueError(f"Missing required columns in test types CSV: {missing}")
+        for row in reader:
+            # Skip fully empty rows or rows without a name
+            if not any(((v or "").strip() for v in row.values())):
+                continue
+            name = (row.get("name") or "").strip()
+            if name == "":
+                continue
+            records.append(
+                TestTypeConfig(
+                    name=name,
+                    trials=int((row.get("trials") or "").strip()),
+                    num_symbols=int((row.get("num_symbols") or "").strip()),
+                    windows_per_symbol=int((row.get("windows_per_symbol") or "").strip()),
+                    overall_start_date=(row.get("overall_start_date") or "").strip(),
+                    overall_end_date=(row.get("overall_end_date") or "").strip(),
+                    seed=(int(row["seed"]) if (row.get("seed") or "").strip() != "" else None),
+                    record_curves=_parse_bool(row.get("record_curves", "")),
+                    plot_dir=((row.get("plot_dir") or "").strip() or None),
+                    warmup_days=int((row.get("warmup_days") or "14").strip() or 14),
+                    trading_days=int((row.get("trading_days") or "14").strip() or 14),
+                )
+            )
+    if not records:
+        raise ValueError("Test types CSV has no rows.")
+    return records
+
+
+def _pick_symbol_windows_within_range(
+    rng: random.Random,
+    overall_start_date: str,
+    overall_end_date: str,
+    num_symbols: int,
+    windows_per_symbol: int,
+    by_symbol: Dict[str, List[AllowedWindow]],
+    warmup_days: int,
+    trading_days: int,
+) -> List[AllowedWindow]:
+    symbols = list(by_symbol.keys())
+    if not symbols:
+        raise ValueError("Allowlist is empty.")
+    chosen_syms = rng.sample(symbols, k=min(num_symbols, len(symbols)))
+
+    start_dt = pd.to_datetime(overall_start_date)
+    end_dt = pd.to_datetime(overall_end_date)
+    total_days = int(warmup_days) + int(trading_days)
+    max_start = end_dt - pd.Timedelta(days=total_days)
+    if max_start < start_dt:
+        raise ValueError("Overall date range too short for warmup_days + trading_days.")
+
+    picks: List[AllowedWindow] = []
+    for s in chosen_syms:
+        defaults = by_symbol.get(s, [])
+        base_timespan = defaults[0].timespan if defaults else "minute"
+        base_multiplier = defaults[0].multiplier if defaults else 1
+
+        for _ in range(max(1, windows_per_symbol)):
+            span_days = (max_start - start_dt).days
+            offset_days = rng.randrange(span_days + 1) if span_days > 0 else 0
+            win_start_dt = start_dt + pd.Timedelta(days=offset_days)
+            win_end_dt = win_start_dt + pd.Timedelta(days=total_days)
+            picks.append(
+                AllowedWindow(
+                    symbol=s,
+                    start_date=win_start_dt.strftime("%Y-%m-%d"),
+                    end_date=win_end_dt.strftime("%Y-%m-%d"),
+                    timespan=base_timespan,
+                    multiplier=int(base_multiplier),
+                )
+            )
+    return picks
+
+
 def load_allowlist_csv(path: str) -> List[AllowedWindow]:
     """
     CSV columns required:
@@ -134,6 +241,26 @@ class BacktestSuite:
                 picks.extend(self._rng.sample(pool, k=windows_per_symbol))
         return picks
 
+    def sample_scenarios_within_range(
+        self,
+        num_symbols: int,
+        windows_per_symbol: int,
+        overall_start_date: str,
+        overall_end_date: str,
+        warmup_days: int,
+        trading_days: int,
+    ) -> List[AllowedWindow]:
+        return _pick_symbol_windows_within_range(
+            self._rng,
+            overall_start_date,
+            overall_end_date,
+            num_symbols,
+            windows_per_symbol,
+            self._by_symbol,
+            warmup_days,
+            trading_days,
+        )
+
     def run_trial(
         self,
         num_symbols: int,
@@ -144,6 +271,84 @@ class BacktestSuite:
         trading_days: int = 14,
     ) -> Tuple[pd.DataFrame, Optional[Dict[str, pd.DataFrame]]]:
         scenarios = self.sample_scenarios(num_symbols=num_symbols, windows_per_symbol=windows_per_symbol)
+        results: List[Dict] = []
+        curves: Dict[str, pd.DataFrame] = {}
+
+        for idx, aw in enumerate(scenarios):
+            agent = self.agent_factory()
+            env = IBBacktestEnv(
+                symbol=aw.symbol,
+                start_date=aw.start_date,
+                end_date=aw.end_date,
+                timespan=aw.timespan,
+                multiplier=aw.multiplier,
+                initial_cash=self.initial_cash,
+                commission_rate=self.commission_rate,
+            )
+            curve = env.run(agent, warmup_days=warmup_days, trading_days=trading_days)
+            metrics = _compute_metrics(curve, aw.timespan, aw.multiplier, self.initial_cash)
+            row = {
+                "run_id": idx,
+                "symbol": aw.symbol,
+                "start_date": aw.start_date,
+                "end_date": aw.end_date,
+                "timespan": aw.timespan,
+                "multiplier": aw.multiplier,
+                **metrics,
+            }
+            results.append(row)
+            if record_equity_curves:
+                key = f"{aw.symbol}_{aw.start_date}_{aw.end_date}_{aw.timespan}{aw.multiplier}"
+                curves[key] = curve.copy()
+
+            if plot_dir:
+                try:
+                    os.makedirs(plot_dir, exist_ok=True)
+                    fname = f"trial_{idx}_{aw.symbol}_{aw.start_date}_{aw.end_date}_{aw.timespan}{aw.multiplier}.png"
+                    safe_name = fname.replace(":", "-").replace("/", "-").replace("\\", "-")
+                    out_path = os.path.join(plot_dir, safe_name)
+                    # Title based on actual plotted window (warmup + trading)
+                    plot_start_dt = str(env.data.loc[0, "time"]) if not env.data.empty else aw.start_date
+                    if getattr(env, "trading_end_timestamp", None) is not None:
+                        plot_end_dt = pd.to_datetime(env.trading_end_timestamp, unit="ms").strftime("%Y-%m-%d %H:%M")
+                    else:
+                        plot_end_dt = aw.end_date
+                    title = f"{aw.symbol} {plot_start_dt} to {plot_end_dt} (warmup {warmup_days}d, trade {trading_days}d) ({aw.timespan} x{aw.multiplier})"
+                    plot_candles_with_trades(
+                        env.data,
+                        env.broker.trades,
+                        title=title,
+                        save_path=out_path,
+                        show=False,
+                        trading_start_timestamp=env.trading_start_timestamp,
+                        trading_end_timestamp=env.trading_end_timestamp,
+                        equity_curve=curve,
+                    )
+                except Exception as _:
+                    # Do not fail the suite on plotting errors
+                    pass
+
+        return pd.DataFrame(results), (curves if record_equity_curves else None)
+
+    def run_trial_within_range(
+        self,
+        num_symbols: int,
+        windows_per_symbol: int,
+        overall_start_date: str,
+        overall_end_date: str,
+        record_equity_curves: bool = False,
+        plot_dir: Optional[str] = None,
+        warmup_days: int = 14,
+        trading_days: int = 14,
+    ) -> Tuple[pd.DataFrame, Optional[Dict[str, pd.DataFrame]]]:
+        scenarios = self.sample_scenarios_within_range(
+            num_symbols=num_symbols,
+            windows_per_symbol=windows_per_symbol,
+            overall_start_date=overall_start_date,
+            overall_end_date=overall_end_date,
+            warmup_days=warmup_days,
+            trading_days=trading_days,
+        )
         results: List[Dict] = []
         curves: Dict[str, pd.DataFrame] = {}
 
@@ -219,6 +424,38 @@ class BacktestSuite:
             df, curves = self.run_trial(
                 num_symbols,
                 windows_per_symbol,
+                record_equity_curves=record_equity_curves,
+                plot_dir=plot_dir,
+                warmup_days=warmup_days,
+                trading_days=trading_days,
+            )
+            df = df.assign(trial=t)
+            all_rows.append(df)
+            if curves:
+                all_curves.update({f"trial{t}_{k}": v for k, v in curves.items()})
+        res = pd.concat(all_rows, ignore_index=True) if all_rows else pd.DataFrame()
+        return res, (all_curves if record_equity_curves else None)
+
+    def run_within_overall_range(
+        self,
+        trials: int,
+        num_symbols: int,
+        windows_per_symbol: int,
+        overall_start_date: str,
+        overall_end_date: str,
+        record_equity_curves: bool = False,
+        plot_dir: Optional[str] = None,
+        warmup_days: int = 14,
+        trading_days: int = 14,
+    ) -> Tuple[pd.DataFrame, Optional[Dict[str, pd.DataFrame]]]:
+        all_rows: List[pd.DataFrame] = []
+        all_curves: Dict[str, pd.DataFrame] = {}
+        for t in range(trials):
+            df, curves = self.run_trial_within_range(
+                num_symbols=num_symbols,
+                windows_per_symbol=windows_per_symbol,
+                overall_start_date=overall_start_date,
+                overall_end_date=overall_end_date,
                 record_equity_curves=record_equity_curves,
                 plot_dir=plot_dir,
                 warmup_days=warmup_days,

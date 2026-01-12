@@ -33,6 +33,32 @@ def plot_candles_with_trades(
     if "time" not in data.columns:
         raise ValueError("Data must include a 'time' column with datetime values.")
 
+    # Futuristic dark theme style
+    ai_market_colors = mpf.make_marketcolors(
+        up="#00D97E",          # neon green for up candles
+        down="#FF6B6B",        # vivid coral for down candles
+        edge="inherit",
+        wick="inherit",
+        volume="inherit",
+        ohlc="inherit",
+    )
+    ai_style = mpf.make_mpf_style(
+        base_mpf_style="nightclouds",
+        marketcolors=ai_market_colors,
+        facecolor="#0b0f19",   # deep navy background
+        edgecolor="#2a2f3a",
+        gridcolor="#2a2f3a",
+        gridstyle="-",
+        figcolor="#0b0f19",
+        rc={
+            "axes.labelcolor": "#C8D0E0",
+            "axes.edgecolor": "#5A6372",
+            "text.color": "#C8D0E0",
+            "xtick.color": "#9AA4B2",
+            "ytick.color": "#9AA4B2",
+        },
+    )
+
     # Base data indexed by datetime for resampling (keep original columns)
     base = data.copy()
     base = base.set_index(pd.DatetimeIndex(base["time"])).sort_index()
@@ -91,28 +117,28 @@ def plot_candles_with_trades(
         else:
             start_equity = float(eq["equity"].iloc[0])
         returns_series = (eq["equity"] / start_equity) - 1.0
-        apds.append(mpf.make_addplot(returns_series.values, panel=2, color="b", ylabel="Return"))
+        apds.append(mpf.make_addplot(returns_series.values, panel=2, color="#00E5FF", ylabel="Return"))
 
         # Build holding percent panel (stock value / total equity * 100)
         # Avoid division by zero by masking zeros
         equity_vals = eq["equity"].replace(0, pd.NA).astype(float)
         hold_value = (eq["position"].astype(float) * eq["close"].astype(float))
         hold_pct = (hold_value / equity_vals) * 100.0
-        apds.append(mpf.make_addplot(hold_pct.values, panel=3, color="purple", ylabel="Holding %"))
+        apds.append(mpf.make_addplot(hold_pct.values, panel=3, color="#A78BFA", ylabel="Holding %"))
 
         # Build position (shares) panel
         position_series = eq["position"].astype(float)
-        apds.append(mpf.make_addplot(position_series.values, panel=4, color="darkorange", ylabel="Shares"))
+        apds.append(mpf.make_addplot(position_series.values, panel=4, color="#FFB86C", ylabel="Shares"))
 
     # Volume on its own panel (panel=1) – hourly
     if "Volume" in df.columns and len(df) > 0:
-        apds.append(mpf.make_addplot(df["Volume"].values, panel=1, type="bar", color="dimgray", ylabel="Volume"))
+        apds.append(mpf.make_addplot(df["Volume"].values, panel=1, type="bar", color="#3B4455", ylabel="Volume"))
 
     kwargs = {
         "type": "candle",
         "volume": False,
         "addplot": apds if apds else None,
-        "style": "yahoo",
+        "style": ai_style,
         "title": title or "",
         "figratio": (24, 9),
         "figscale": 1.8,
@@ -126,7 +152,7 @@ def plot_candles_with_trades(
     if trading_start_timestamp is not None:
         start_dt = idx[0]
         trading_start_dt = pd.to_datetime(trading_start_timestamp, unit="ms")
-        axes[0].axvspan(start_dt, trading_start_dt, facecolor="lightgrey", alpha=0.2, zorder=0)
+        axes[0].axvspan(start_dt, trading_start_dt, facecolor="#101826", alpha=0.35, zorder=0)
 
     # Shade buy/sell regions (one bar wide centered on timestamp)
     def span_bounds(i: int):
@@ -148,10 +174,10 @@ def plot_candles_with_trades(
 
     for i in buy_pos:
         l, r = span_bounds(i)
-        axes[0].axvspan(l, r, facecolor="#cfe8ff", alpha=0.5, zorder=1)  # light blue
+        axes[0].axvspan(l, r, facecolor="#0EA5A5", alpha=0.35, zorder=1)  # teal glow
     for i in sell_pos:
         l, r = span_bounds(i)
-        axes[0].axvspan(l, r, facecolor="#ffe5cc", alpha=0.5, zorder=1)  # light orange
+        axes[0].axvspan(l, r, facecolor="#F59E0B", alpha=0.35, zorder=1)  # amber glow
 
     # Annotate quantities next to markers
     # Place annotation at close price of the bar
@@ -170,9 +196,18 @@ def plot_candles_with_trades(
                 ha="center",
                 va="bottom",
                 fontsize=8,
-                color="black",
-                bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="none", alpha=0.6),
+                color="#E5E7EB",
+                bbox=dict(boxstyle="round,pad=0.2", fc="#0b0f19", ec="#5A6372", alpha=0.7),
             )
+
+    # Add clear borders to each subplot/panel
+    axes_list = axes if isinstance(axes, (list, tuple)) else [axes]
+    for ax in axes_list:
+        for spine in ax.spines.values():
+            spine.set_visible(True)
+            spine.set_edgecolor("#5A6372")
+            spine.set_linewidth(1.0)
+        ax.grid(True, color="#2a2f3a", linestyle="-", linewidth=0.6, alpha=0.6)
 
     if save_path:
         fig.savefig(save_path, dpi=200, bbox_inches="tight")

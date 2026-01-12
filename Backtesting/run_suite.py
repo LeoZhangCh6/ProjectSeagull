@@ -8,6 +8,59 @@ from ib_backtester.suite import (
     load_test_types_csv,
 )
 from ib_backtester.agents.sample_agent import SmaCrossAgent
+from ib_backtester.agents.multisignal_agent import MultiSignalAgent, ExternalDataConfig
+
+
+def _get_agent_factory() -> callable:
+    """
+    Selects an agent by BACKTEST_AGENT env var using a readable registry.
+    Defaults to 'sma_cross'.
+
+    Env overrides for 'sma_cross':
+      SMA_FAST, SMA_SLOW, TRADE_SIZE
+
+    Env overrides for 'multi_signal':
+      TRADE_SIZE, PRIMARY_FAST, PRIMARY_SLOW, PEER_SYMBOL, PEER_TIMESPAN, PEER_MULTIPLIER, SF1_CSV_PATH, PEER_MOM_WINDOW
+    """
+    agent_name = os.environ.get("BACKTEST_AGENT", "sma_cross").strip().lower()
+
+    def make_sma_cross():
+        fast = int(os.environ.get("SMA_FAST", "10"))
+        slow = int(os.environ.get("SMA_SLOW", "20"))
+        trade_size = int(os.environ.get("TRADE_SIZE", "10"))
+        return lambda: SmaCrossAgent(fast=fast, slow=slow, trade_size=trade_size)
+
+    def make_multi_signal():
+        trade_size = int(os.environ.get("TRADE_SIZE", "10"))
+        primary_fast = int(os.environ.get("PRIMARY_FAST", "10"))
+        primary_slow = int(os.environ.get("PRIMARY_SLOW", "20"))
+        peer_symbol = os.environ.get("PEER_SYMBOL", "SPY")
+        peer_timespan = os.environ.get("PEER_TIMESPAN", "day")
+        peer_multiplier = int(os.environ.get("PEER_MULTIPLIER", "1"))
+        sf1_csv_path = os.environ.get("SF1_CSV_PATH", None)
+        peer_mom_window = int(os.environ.get("PEER_MOM_WINDOW", "20"))
+        ext = ExternalDataConfig(
+            peer_symbol=peer_symbol,
+            peer_timespan=peer_timespan,
+            peer_multiplier=peer_multiplier,
+            sf1_csv_path=sf1_csv_path,
+        )
+        return lambda: MultiSignalAgent(
+            trade_size=trade_size,
+            primary_fast=primary_fast,
+            primary_slow=primary_slow,
+            peer_momentum_window=peer_mom_window,
+            external=ext,
+        )
+
+    AGENTS = {
+        "sma_cross": make_sma_cross,
+        "multi_signal": make_multi_signal,
+    }
+
+    if agent_name not in AGENTS:
+        raise ValueError(f"Unknown BACKTEST_AGENT '{agent_name}'. Available: {sorted(AGENTS.keys())}")
+    return AGENTS[agent_name]()
 
 
 def main():
@@ -30,9 +83,10 @@ def main():
     all_curves = {}
 
     for cfg in test_types:
+        agent_factory = _get_agent_factory()
         suite = BacktestSuite(
             allowlist=allowlist,
-            agent_factory=lambda: SmaCrossAgent(fast=10, slow=20, trade_size=10),
+            agent_factory=agent_factory,
             initial_cash=100000.0,
             commission_rate=0.0005,
             seed=cfg.seed,
