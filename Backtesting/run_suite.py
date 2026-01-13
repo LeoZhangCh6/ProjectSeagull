@@ -9,6 +9,7 @@ from ib_backtester.suite import (
 )
 from ib_backtester.agents.sample_agent import SmaCrossAgent
 from ib_backtester.agents.multisignal_agent import MultiSignalAgent, ExternalDataConfig
+from ib_backtester.agents.multi_source_model_agent import MultiSourceModelAgent, MultiSourceConfig
 
 
 def _get_agent_factory() -> callable:
@@ -53,9 +54,30 @@ def _get_agent_factory() -> callable:
             external=ext,
         )
 
+    def make_multi_source_model():
+        trade_cap = int(os.environ.get("TRADE_CAP_PER_BAR", "10"))
+        window_days = int(os.environ.get("WINDOW_DAYS", "14"))
+        include_primary = os.environ.get("INCLUDE_PRIMARY_PRICE", "1") == "1"
+        random_seed = int(os.environ.get("MODEL_RANDOM_SEED", "42"))
+        # Use ';' as separator to be Windows-path friendly
+        massive_specs = [s.strip() for s in os.environ.get("SOURCES_MASSIVE", "").split(";") if s.strip()]
+        csv_paths = [s.strip() for s in os.environ.get("SOURCES_CSV", "").split(";") if s.strip()]
+        sf1_specs = [s.strip() for s in os.environ.get("SOURCES_SF1", "").split(";") if s.strip()]
+        cfg = MultiSourceConfig(
+            window_days=window_days,
+            include_primary_price=include_primary,
+            trade_cap_per_bar=trade_cap,
+            random_seed=random_seed,
+            massive_specs=massive_specs if massive_specs else None,
+            csv_paths=csv_paths if csv_paths else None,
+            sf1_specs=sf1_specs if sf1_specs else None,
+        )
+        return lambda: MultiSourceModelAgent(config=cfg)
+
     AGENTS = {
         "sma_cross": make_sma_cross,
         "multi_signal": make_multi_signal,
+        "multi_source_model": make_multi_source_model,
     }
 
     if agent_name not in AGENTS:
@@ -125,6 +147,7 @@ if __name__ == "__main__":
 
     # Requires MASSIVE_API_KEY or POLYGON_API_KEY in environment
     os.environ['MASSIVE_API_KEY'] = "Y2mALom8TLdet7Bc8ktLeQ4355hAdpG6"
+    os.environ['NASDAQ_DATA_LINK_API_KEY'] = "s_phvq25xVMyCa6KBXFj"
     main()
     
     

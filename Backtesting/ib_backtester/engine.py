@@ -75,6 +75,22 @@ class IBFacade:
         self._next_order_id += 1
         return oid
 
+    def get_portfolio_state(self) -> Dict[str, float]:
+        broker = self._env.broker
+        # Use last known close as mark price
+        if 0 <= self._env.current_index < len(self._env.data):
+            price = float(self._env.data.iloc[self._env.current_index]["close"])
+        else:
+            price = 0.0
+        equity = float(broker.cash + broker.position * price)
+        return {
+            "cash": float(broker.cash),
+            "position": int(broker.position),
+            "avg_cost": float(broker.avg_cost),
+            "mark_price": price,
+            "equity": equity,
+        }
+
     def reqHistoricalData(
         self,
         contract: Contract,
