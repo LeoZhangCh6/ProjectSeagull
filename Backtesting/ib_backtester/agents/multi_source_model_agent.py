@@ -16,7 +16,6 @@ class MultiSourceConfig:
     window_days: int = 14
     include_primary_price: bool = True
     trade_cap_per_bar: int = 10
-    random_seed: Optional[int] = 42
     massive_specs: Optional[List[str]] = None  # e.g., ["SPY:day:1", "QQQ:day:1"]
     csv_paths: Optional[List[str]] = None      # list of CSVs with columns: date,value
     sf1_specs: Optional[List[str]] = None      # e.g., ["AAPL:ARQ:revenue","AAPL:MRQ:assets"]
@@ -39,7 +38,15 @@ class MultiSourceModelAgent(BaseAgent):
         self._feature_names: List[str] = []
         self._weights: Optional[np.ndarray] = None
         self._bias: float = 0.0
-        self._rng = np.random.default_rng(self.config.random_seed)
+        # Seed from testbench if provided (TESTBENCH_RANDOM_SEED); otherwise random
+        _seed_env = os.environ.get("TESTBENCH_RANDOM_SEED", "").strip()
+        if _seed_env != "":
+            try:
+                self._rng = np.random.default_rng(int(_seed_env))
+            except Exception:
+                self._rng = np.random.default_rng()
+        else:
+            self._rng = np.random.default_rng()
 
     def _parse_massive_specs(self) -> List[Tuple[str, str, int]]:
         specs = self.config.massive_specs or []

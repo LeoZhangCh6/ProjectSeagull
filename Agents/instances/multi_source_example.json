@@ -1,0 +1,10 @@
+{
+  "BACKTEST_AGENT": "multi_source_model",
+  "WINDOW_DAYS": 14,
+  "TRADE_CAP_PER_BAR": 5,
+  "INCLUDE_PRIMARY_PRICE": 1,
+  "SOURCES_MASSIVE": "SPY:day:1",
+  "SOURCES_CSV": "Backtesting/tests/data/test_econ1.csv;Backtesting/tests/data/test_sf1_metric.csv",
+  "SOURCES_SF1": "AAPL:ARQ:revenue;AAPL:MRQ:assets"
+}
+

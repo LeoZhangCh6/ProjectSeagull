@@ -10,79 +10,8 @@ from ib_backtester.suite import (
 from ib_backtester.agents.sample_agent import SmaCrossAgent
 from ib_backtester.agents.multisignal_agent import MultiSignalAgent, ExternalDataConfig
 from ib_backtester.agents.multi_source_model_agent import MultiSourceModelAgent, MultiSourceConfig
-
-
-def _get_agent_factory() -> callable:
-    """
-    Selects an agent by BACKTEST_AGENT env var using a readable registry.
-    Defaults to 'sma_cross'.
-
-    Env overrides for 'sma_cross':
-      SMA_FAST, SMA_SLOW, TRADE_SIZE
-
-    Env overrides for 'multi_signal':
-      TRADE_SIZE, PRIMARY_FAST, PRIMARY_SLOW, PEER_SYMBOL, PEER_TIMESPAN, PEER_MULTIPLIER, SF1_CSV_PATH, PEER_MOM_WINDOW
-    """
-    agent_name = os.environ.get("BACKTEST_AGENT", "sma_cross").strip().lower()
-
-    def make_sma_cross():
-        fast = int(os.environ.get("SMA_FAST", "10"))
-        slow = int(os.environ.get("SMA_SLOW", "20"))
-        trade_size = int(os.environ.get("TRADE_SIZE", "10"))
-        return lambda: SmaCrossAgent(fast=fast, slow=slow, trade_size=trade_size)
-
-    def make_multi_signal():
-        trade_size = int(os.environ.get("TRADE_SIZE", "10"))
-        primary_fast = int(os.environ.get("PRIMARY_FAST", "10"))
-        primary_slow = int(os.environ.get("PRIMARY_SLOW", "20"))
-        peer_symbol = os.environ.get("PEER_SYMBOL", "SPY")
-        peer_timespan = os.environ.get("PEER_TIMESPAN", "day")
-        peer_multiplier = int(os.environ.get("PEER_MULTIPLIER", "1"))
-        sf1_csv_path = os.environ.get("SF1_CSV_PATH", None)
-        peer_mom_window = int(os.environ.get("PEER_MOM_WINDOW", "20"))
-        ext = ExternalDataConfig(
-            peer_symbol=peer_symbol,
-            peer_timespan=peer_timespan,
-            peer_multiplier=peer_multiplier,
-            sf1_csv_path=sf1_csv_path,
-        )
-        return lambda: MultiSignalAgent(
-            trade_size=trade_size,
-            primary_fast=primary_fast,
-            primary_slow=primary_slow,
-            peer_momentum_window=peer_mom_window,
-            external=ext,
-        )
-
-    def make_multi_source_model():
-        trade_cap = int(os.environ.get("TRADE_CAP_PER_BAR", "10"))
-        window_days = int(os.environ.get("WINDOW_DAYS", "14"))
-        include_primary = os.environ.get("INCLUDE_PRIMARY_PRICE", "1") == "1"
-        random_seed = int(os.environ.get("MODEL_RANDOM_SEED", "42"))
-        # Use ';' as separator to be Windows-path friendly
-        massive_specs = [s.strip() for s in os.environ.get("SOURCES_MASSIVE", "").split(";") if s.strip()]
-        csv_paths = [s.strip() for s in os.environ.get("SOURCES_CSV", "").split(";") if s.strip()]
-        sf1_specs = [s.strip() for s in os.environ.get("SOURCES_SF1", "").split(";") if s.strip()]
-        cfg = MultiSourceConfig(
-            window_days=window_days,
-            include_primary_price=include_primary,
-            trade_cap_per_bar=trade_cap,
-            random_seed=random_seed,
-            massive_specs=massive_specs if massive_specs else None,
-            csv_paths=csv_paths if csv_paths else None,
-            sf1_specs=sf1_specs if sf1_specs else None,
-        )
-        return lambda: MultiSourceModelAgent(config=cfg)
-
-    AGENTS = {
-        "sma_cross": make_sma_cross,
-        "multi_signal": make_multi_signal,
-        "multi_source_model": make_multi_source_model,
-    }
-
-    if agent_name not in AGENTS:
-        raise ValueError(f"Unknown BACKTEST_AGENT '{agent_name}'. Available: {sorted(AGENTS.keys())}")
-    return AGENTS[agent_name]()
+from Common.reporting import generate_test_report
+from Common.agents_registry import get_agent_factory
 
 
 def main():
@@ -104,8 +33,77 @@ def main():
     all_results = []
     all_curves = {}
 
+    # Optional: load agent instance overrides from JSON file and set env vars accordingly
+    agent_config_path = os.environ.get("BACKTEST_AGENT_CONFIG", "").strip()
+    if agent_config_path:
+        try:
+            import json
+            with open(agent_config_path, "r", encoding="utf-8") as f:
+                overrides = json.load(f)
+            for k, v in overrides.items():
+                os.environ[str(k)] = str(v)
+        except Exception:
+            pass
+
     for cfg in test_types:
-        agent_factory = _get_agent_factory()
+        # Propagate testbench seed to agents (used for model RNG initialization)
+        try:
+            if cfg.seed is not None:
+                os.environ["TESTBENCH_RANDOM_SEED"] = str(int(cfg.seed))
+            else:
+                if "TESTBENCH_RANDOM_SEED" in os.environ:
+                    del os.environ["TESTBENCH_RANDOM_SEED"]
+        except Exception:
+            pass
+
+        agent_factory = get_agent_factory()
+        # Probe an instance to describe agent for the report
+        agent_probe = agent_factory()
+        agent_name = type(agent_probe).__name__
+        agent_info = {}
+        try:
+            if isinstance(agent_probe, SmaCrossAgent):
+                agent_info = {
+                    "type": "SmaCrossAgent",
+                    "params": {
+                        "fast": getattr(agent_probe, "fast", None),
+                        "slow": getattr(agent_probe, "slow", None),
+                        "trade_size": getattr(agent_probe, "trade_size", None),
+                    },
+                    "signals": ["primary_close_SMA_fast", "primary_close_SMA_slow"],
+                }
+            elif isinstance(agent_probe, MultiSignalAgent):
+                ext = getattr(agent_probe, "external", None)
+                agent_info = {
+                    "type": "MultiSignalAgent",
+                    "params": {
+                        "primary_fast": getattr(agent_probe, "primary_fast", None),
+                        "primary_slow": getattr(agent_probe, "primary_slow", None),
+                        "peer_momentum_window": getattr(agent_probe, "peer_momentum_window", None),
+                        "trade_size": getattr(agent_probe, "trade_size", None),
+                    },
+                    "sources": {
+                        "peer_symbol": getattr(ext, "peer_symbol", None) if ext else None,
+                        "peer_timespan": getattr(ext, "peer_timespan", None) if ext else None,
+                        "peer_multiplier": getattr(ext, "peer_multiplier", None) if ext else None,
+                        "sf1_csv_path": getattr(ext, "sf1_csv_path", None) if ext else None,
+                    },
+                }
+            elif isinstance(agent_probe, MultiSourceModelAgent):
+                cfg_obj = getattr(agent_probe, "config", None)
+                agent_info = {
+                    "type": "MultiSourceModelAgent",
+                    "config": {
+                        "window_days": getattr(cfg_obj, "window_days", None) if cfg_obj else None,
+                        "include_primary_price": getattr(cfg_obj, "include_primary_price", None) if cfg_obj else None,
+                        "trade_cap_per_bar": getattr(cfg_obj, "trade_cap_per_bar", None) if cfg_obj else None,
+                        "massive_specs": getattr(cfg_obj, "massive_specs", None) if cfg_obj else None,
+                        "sf1_specs": getattr(cfg_obj, "sf1_specs", None) if cfg_obj else None,
+                        "csv_paths": getattr(cfg_obj, "csv_paths", None) if cfg_obj else None,
+                    },
+                }
+        except Exception:
+            agent_info = {"type": agent_name}
         suite = BacktestSuite(
             allowlist=allowlist,
             agent_factory=agent_factory,
@@ -133,6 +131,13 @@ def main():
         all_results.append(results_df)
         if curves:
             all_curves.update({f"{cfg.name}_{k}": v for k, v in curves.items()})
+
+        # Write per-test markdown report next to plots (if plot_dir provided)
+
+        try:
+            generate_test_report(cfg.plot_dir, cfg.name, agent_name, agent_info, results_df, curves)
+        except Exception:
+            pass
 
     aggregate = pd.concat(all_results, ignore_index=True) if all_results else pd.DataFrame()
     print("Aggregate results:")
