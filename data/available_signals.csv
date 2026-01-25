@@ -1,0 +1,6 @@
+id,source,spec,model_freq,description,enabled
+SPY_day_close,massive,SPY:day:1:close,1D,SPY daily close,1
+QQQ_day_close,massive,QQQ:day:1:close,1D,QQQ daily close,1
+AAPL_arq_revenue,sf1,AAPL:ARQ:revenue,1D,AAPL as-reported quarterly revenue (daily-forward-filled),1
+AAPL_mrq_assets,sf1,AAPL:MRQ:assets,1D,AAPL most-recent quarterly assets (daily-forward-filled),1
+

@@ -1,34 +1,64 @@
 import os
+import sys
+
+# region agent log
+try:
+    _dbg_log_path = r"c:\Users\Tianyi Zhang\Desktop\Project Highball\ProjectSeagull\.cursor\debug.log"
+    _here = os.path.dirname(os.path.abspath(__file__))
+    _project_root = os.path.dirname(_here)
+    if _project_root not in sys.path:
+        sys.path.insert(0, _project_root)
+    with open(_dbg_log_path, "a", encoding="utf-8") as _f:
+        import json, time
+        _f.write(json.dumps({
+            "sessionId": "debug-session",
+            "runId": "pre-fix",
+            "hypothesisId": "H1",
+            "location": "Backtesting/run_suite.py:bootstrap",
+            "message": "Bootstrap sys.path and Common visibility",
+            "data": {
+                "cwd": os.getcwd(),
+                "here": _here,
+                "project_root": _project_root,
+                "common_exists": os.path.isdir(os.path.join(_project_root, "Common")),
+                "sys_path_head": sys.path[:5],
+            },
+            "timestamp": int(time.time() * 1000)
+        }) + "\n")
+except Exception:
+    pass
+# endregion
 
 import pandas as pd
 
 from ib_backtester.suite import (
     BacktestSuite,
-    load_allowlist_csv,
-    load_test_types_csv,
+    load_test_definitions_db,
 )
 from ib_backtester.agents.sample_agent import SmaCrossAgent
 from ib_backtester.agents.multisignal_agent import MultiSignalAgent, ExternalDataConfig
 from ib_backtester.agents.multi_source_model_agent import MultiSourceModelAgent, MultiSourceConfig
 from Common.reporting import generate_test_report
 from Common.agents_registry import get_agent_factory
+from Common.agents_loader import get_agent_factory_from_registry
 
 
 def main():
     
     # Config
     base_dir = os.path.dirname(__file__)
-    allowlist_path = os.environ.get("BACKTEST_ALLOWLIST", os.path.join(base_dir, "config", "allowlist.csv"))
-    tests_csv_path = os.environ.get("BACKTEST_TESTS_CSV", os.path.join(base_dir, "config", "test_types.csv"))
+    
     select_names = os.environ.get("BACKTEST_TEST_NAMES", "")
     selected = {s.strip() for s in select_names.split(",") if s.strip()} if select_names else None
 
-    allowlist = load_allowlist_csv(allowlist_path)
-    test_types = load_test_types_csv(tests_csv_path)
-    if selected is not None:
-        test_types = [t for t in test_types if t.name in selected]
-        if not test_types:
-            raise ValueError(f"No matching test types found in '{tests_csv_path}' for names: {sorted(selected)}")
+    # Always load test definitions from Postgres (optionally filtered by BACKTEST_TEST_NAMES)
+    try:
+        sel_list = sorted(selected) if selected else None
+        test_types = load_test_definitions_db(sel_list)
+        if selected and not test_types:
+            raise ValueError(f"No matching test definitions found for names: {sel_list}")
+    except Exception as e:
+        raise RuntimeError("Failed to load test definitions from Postgres. Ensure DATABASE_URL or PG* env vars are set and the DB is initialized (Scripts/init_db.py).") from e
 
     all_results = []
     all_curves = {}
@@ -56,6 +86,7 @@ def main():
         except Exception:
             pass
 
+        # Agent selection via env registry
         agent_factory = get_agent_factory()
         # Probe an instance to describe agent for the report
         agent_probe = agent_factory()
@@ -102,22 +133,53 @@ def main():
                         "csv_paths": getattr(cfg_obj, "csv_paths", None) if cfg_obj else None,
                     },
                 }
+
+            # Include declared registry signals if present on any agent instance
+            if hasattr(agent_probe, "used_signal_ids"):
+                try:
+                    agent_info["used_signal_ids"] = list(getattr(agent_probe, "used_signal_ids"))
+                except Exception:
+                    pass
+
         except Exception:
             agent_info = {"type": agent_name}
+
+        # Resolve test scope per test (DB) or reuse CSV scope (non-DB)
+        overall_start_for_run = cfg.overall_start_date
+        overall_end_for_run = cfg.overall_end_date
+
         suite = BacktestSuite(
-            allowlist=allowlist,
             agent_factory=agent_factory,
             initial_cash=100000.0,
             commission_rate=0.0005,
             seed=cfg.seed,
         )
 
+        # Resolve single trading symbol and data freq from agent (fallback to env)
+        symbol = getattr(agent_probe, "symbol", None)
+        if symbol is None and hasattr(agent_probe, "get_symbol") and callable(getattr(agent_probe, "get_symbol")):
+            try:
+                symbol = agent_probe.get_symbol()
+            except Exception:
+                symbol = None
+        if symbol is None:
+            symbol = os.environ.get("BACKTEST_SYMBOL", None)
+        if not symbol:
+            raise ValueError("Agent must define a trading symbol (attribute 'symbol' or get_symbol()), or set BACKTEST_SYMBOL.")
+        timespan = getattr(agent_probe, "primary_timespan", os.environ.get("BACKTEST_TIMESPAN", "minute"))
+        multiplier = int(getattr(agent_probe, "primary_multiplier", int(os.environ.get("BACKTEST_MULTIPLIER", "1"))))
+
+        # Determine windows_per_symbol from env (default 1)
+        windows_per_symbol = int(os.environ.get("BACKTEST_WINDOWS_PER_SYMBOL", "1"))
+
         results_df, curves = suite.run_within_overall_range(
             trials=cfg.trials,
-            num_symbols=cfg.num_symbols,
-            windows_per_symbol=cfg.windows_per_symbol,
-            overall_start_date=cfg.overall_start_date,
-            overall_end_date=cfg.overall_end_date,
+            symbol=str(symbol),
+            timespan=str(timespan),
+            multiplier=int(multiplier),
+            windows_per_symbol=windows_per_symbol,
+            overall_start_date=overall_start_for_run,
+            overall_end_date=overall_end_for_run,
             record_equity_curves=cfg.record_curves,
             plot_dir=cfg.plot_dir,
             warmup_days=cfg.warmup_days,
@@ -133,9 +195,12 @@ def main():
             all_curves.update({f"{cfg.name}_{k}": v for k, v in curves.items()})
 
         # Write per-test markdown report next to plots (if plot_dir provided)
-
         try:
-            generate_test_report(cfg.plot_dir, cfg.name, agent_name, agent_info, results_df, curves)
+            report_path = generate_test_report(cfg.plot_dir, cfg.name, agent_name, agent_info, results_df, curves)
+            if cfg.plot_dir:
+                print(f"[{cfg.name}] Outputs saved to: {cfg.plot_dir}")
+                if report_path:
+                    print(f"[{cfg.name}] Test report: {report_path}")
         except Exception:
             pass
 
@@ -147,6 +212,8 @@ def main():
     if out_csv:
         aggregate.to_csv(out_csv, index=False)
         print(f"Saved results to: {out_csv}")
+    else:
+        print("Set BACKTEST_RESULTS_OUT to save the aggregate results CSV.")
 
 if __name__ == "__main__":
 

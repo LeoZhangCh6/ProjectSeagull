@@ -27,19 +27,6 @@ def get_sf1_series(
     """
     Fetch a single SF1 fundamental column for a ticker/dimension from Nasdaq Data Link
     (Sharadar SF1 datatable) and return as a Series indexed by calendardate.
-
-    Parameters
-    ----------
-    symbol : str
-        Ticker symbol (e.g., 'AAPL')
-    column : str
-        SF1 column name (e.g., 'revenue', 'pe', 'assets', etc.)
-    dimension : str
-        One of ARQ/MRQ/ARY/MRY (quarterly/yearly, as-reported/most-recent)
-    start_date, end_date : str
-        YYYY-MM-DD boundaries; results will be filtered to this range
-    api_key : Optional[str]
-        If not provided, tries NASDAQ_DATA_LINK_API_KEY / NASDAQ_API_KEY / QUANDL_API_KEY env vars
     """
     api_key = _get_nasdaq_api_key(api_key)
     base = "https://data.nasdaq.com/api/v3/datatables/SHARADAR/SF1.json"
@@ -66,7 +53,6 @@ def get_sf1_series(
         raise ValueError(f"SF1 column '{column}' not found in response.")
     df["calendardate"] = pd.to_datetime(df["calendardate"])
     df = df.sort_values("calendardate")
-    # Filter date range
     start_dt = pd.to_datetime(start_date)
     end_dt = pd.to_datetime(end_date)
     df = df[(df["calendardate"] >= start_dt) & (df["calendardate"] <= end_dt)]

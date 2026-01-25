@@ -1,0 +1,3 @@
+name,path,description,enabled
+example_function,instances/example_function_agent.py,Example instance agent using registry signals,1
+

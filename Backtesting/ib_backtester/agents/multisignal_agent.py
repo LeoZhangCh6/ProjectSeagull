@@ -5,7 +5,7 @@ from typing import Optional, Tuple
 import pandas as pd
 
 from ..engine import BaseAgent
-from ..massive_client import get_aggregate_bars
+from Common.massive_client import get_aggregate_bars
 from ..types import Action, Contract, Order, OrderType
 
 

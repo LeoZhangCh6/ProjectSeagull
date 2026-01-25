@@ -11,10 +11,14 @@ import pandas as pd
 
 from .engine import BaseAgent, IBBacktestEnv
 from .plotting import plot_candles_with_trades
+try:
+    from Common import db as _db
+except Exception:
+    _db = None  # type: ignore
 
 
 @dataclass(frozen=True)
-class AllowedWindow:
+class ScopeWindow:
     symbol: str
     start_date: str  # YYYY-MM-DD
     end_date: str    # YYYY-MM-DD
@@ -23,11 +27,9 @@ class AllowedWindow:
 
 
 @dataclass(frozen=True)
-class TestTypeConfig:
+class TestDefinition:
     name: str
     trials: int
-    num_symbols: int
-    windows_per_symbol: int
     overall_start_date: str
     overall_end_date: str
     seed: Optional[int] = None
@@ -42,21 +44,21 @@ def _parse_bool(value: str) -> bool:
     return v in {"1", "true", "t", "yes", "y"}
 
 
-def load_test_types_csv(path: str) -> List[TestTypeConfig]:
+def load_test_definitions_csv(path: str) -> List[TestDefinition]:
     """
     CSV columns:
-      required: name,trials,num_symbols,windows_per_symbol,overall_start_date,overall_end_date
+      required: name,trials,overall_start_date,overall_end_date
       optional: seed,record_curves,plot_dir,warmup_days,trading_days
     """
     if not os.path.exists(path):
-        raise FileNotFoundError(f"Test types CSV not found: {path}")
-    records: List[TestTypeConfig] = []
+        raise FileNotFoundError(f"Test definitions CSV not found: {path}")
+    records: List[TestDefinition] = []
     with open(path, "r", newline="") as f:
         reader = csv.DictReader(f)
-        required = {"name", "trials", "num_symbols", "windows_per_symbol", "overall_start_date", "overall_end_date"}
+        required = {"name", "trials", "overall_start_date", "overall_end_date"}
         missing = required - set(reader.fieldnames or [])
         if missing:
-            raise ValueError(f"Missing required columns in test types CSV: {missing}")
+            raise ValueError(f"Missing required columns in test definitions CSV: {missing}")
         for row in reader:
             # Skip fully empty rows or rows without a name
             if not any(((v or "").strip() for v in row.values())):
@@ -65,11 +67,9 @@ def load_test_types_csv(path: str) -> List[TestTypeConfig]:
             if name == "":
                 continue
             records.append(
-                TestTypeConfig(
+                TestDefinition(
                     name=name,
                     trials=int((row.get("trials") or "").strip()),
-                    num_symbols=int((row.get("num_symbols") or "").strip()),
-                    windows_per_symbol=int((row.get("windows_per_symbol") or "").strip()),
                     overall_start_date=(row.get("overall_start_date") or "").strip(),
                     overall_end_date=(row.get("overall_end_date") or "").strip(),
                     seed=(int(row["seed"]) if (row.get("seed") or "").strip() != "" else None),
@@ -80,7 +80,7 @@ def load_test_types_csv(path: str) -> List[TestTypeConfig]:
                 )
             )
     if not records:
-        raise ValueError("Test types CSV has no rows.")
+        raise ValueError("Test definitions CSV has no rows.")
     return records
 
 
@@ -90,13 +90,13 @@ def _pick_symbol_windows_within_range(
     overall_end_date: str,
     num_symbols: int,
     windows_per_symbol: int,
-    by_symbol: Dict[str, List[AllowedWindow]],
+    by_symbol: Dict[str, List[ScopeWindow]],
     warmup_days: int,
     trading_days: int,
-) -> List[AllowedWindow]:
+) -> List[ScopeWindow]:
     symbols = list(by_symbol.keys())
     if not symbols:
-        raise ValueError("Allowlist is empty.")
+        raise ValueError("Test scope is empty.")
     chosen_syms = rng.sample(symbols, k=min(num_symbols, len(symbols)))
 
     start_dt = pd.to_datetime(overall_start_date)
@@ -106,7 +106,7 @@ def _pick_symbol_windows_within_range(
     if max_start < start_dt:
         raise ValueError("Overall date range too short for warmup_days + trading_days.")
 
-    picks: List[AllowedWindow] = []
+    picks: List[ScopeWindow] = []
     for s in chosen_syms:
         defaults = by_symbol.get(s, [])
         base_timespan = defaults[0].timespan if defaults else "minute"
@@ -118,7 +118,7 @@ def _pick_symbol_windows_within_range(
             win_start_dt = start_dt + pd.Timedelta(days=offset_days)
             win_end_dt = win_start_dt + pd.Timedelta(days=total_days)
             picks.append(
-                AllowedWindow(
+                ScopeWindow(
                     symbol=s,
                     start_date=win_start_dt.strftime("%Y-%m-%d"),
                     end_date=win_end_dt.strftime("%Y-%m-%d"),
@@ -129,23 +129,23 @@ def _pick_symbol_windows_within_range(
     return picks
 
 
-def load_allowlist_csv(path: str) -> List[AllowedWindow]:
+def load_test_scope_csv(path: str) -> List[ScopeWindow]:
     """
     CSV columns required:
       symbol,start_date,end_date,timespan,multiplier
     """
     if not os.path.exists(path):
-        raise FileNotFoundError(f"Allowlist CSV not found: {path}")
-    records: List[AllowedWindow] = []
+        raise FileNotFoundError(f"Test scope CSV not found: {path}")
+    records: List[ScopeWindow] = []
     with open(path, "r", newline="") as f:
         reader = csv.DictReader(f)
         required = {"symbol", "start_date", "end_date"}
         missing = required - set(reader.fieldnames or [])
         if missing:
-            raise ValueError(f"Missing required columns in allowlist: {missing}")
+            raise ValueError(f"Missing required columns in test scope: {missing}")
         for row in reader:
             records.append(
-                AllowedWindow(
+                ScopeWindow(
                     symbol=row["symbol"].strip(),
                     start_date=row["start_date"].strip(),
                     end_date=row["end_date"].strip(),
@@ -154,8 +154,84 @@ def load_allowlist_csv(path: str) -> List[AllowedWindow]:
                 )
             )
     if not records:
-        raise ValueError("Allowlist CSV has no rows.")
+        raise ValueError("Test scope CSV has no rows.")
     return records
+
+
+def load_test_scope_db() -> List[ScopeWindow]:
+    records: List[ScopeWindow] = []
+    with _db.get_pg_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT symbol, start_date, end_date, timespan, multiplier
+                FROM test_scope
+                ORDER BY symbol, start_date
+                """
+            )
+            for (symbol, start_date, end_date, timespan, multiplier) in cur.fetchall():
+                records.append(
+                    ScopeWindow(
+                        symbol=str(symbol),
+                        start_date=str(start_date),
+                        end_date=str(end_date),
+                        timespan=str(timespan),
+                        multiplier=int(multiplier),
+                    )
+                )
+    if not records:
+        raise ValueError("Test scope table has no rows.")
+    return records
+
+
+from typing import Tuple  # local import to avoid top-level change cascade
+
+
+def load_test_scope_for_test_db(test_name: str) -> Tuple[List[ScopeWindow], str, str]:
+    if _db is None:
+        raise RuntimeError("DB module not available")
+    records: List[ScopeWindow] = []
+    start_s: Optional[str] = None
+    end_s: Optional[str] = None
+    with _db.get_pg_conn() as conn:
+        with conn.cursor() as cur:
+            # Fetch overall window from test_scope
+            cur.execute(
+                """
+                SELECT start_date, end_date
+                FROM test_scope
+                WHERE test_name = %s
+                """,
+                (test_name,),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise ValueError(f"test_scope not found for test '{test_name}'")
+            start_s, end_s = str(row[0]), str(row[1])
+
+            cur.execute(
+                """
+                SELECT s.symbol, s.timespan, s.multiplier
+                FROM test_scope_symbols s
+                JOIN test_scope t ON t.test_name = s.test_name
+                WHERE s.test_name = %s
+                ORDER BY s.symbol
+                """,
+                (test_name,),
+            )
+            for (symbol, timespan, multiplier) in cur.fetchall():
+                records.append(
+                    ScopeWindow(
+                        symbol=str(symbol),
+                        start_date=start_s,
+                        end_date=end_s,
+                        timespan=str(timespan),
+                        multiplier=int(multiplier),
+                    )
+                )
+    if not records:
+        raise ValueError(f"No symbols found in test_scope for test '{test_name}'.")
+    return records, start_s, end_s
 
 
 def _annualization_factor(timespan: str, multiplier: int) -> float:
@@ -203,74 +279,123 @@ def _compute_metrics(equity_curve: pd.DataFrame, timespan: str, multiplier: int,
     }
 
 
+def load_test_definitions_db(names: Optional[List[str]] = None) -> List[TestDefinition]:
+    rows: List[TestDefinition] = []
+    with _db.get_pg_conn() as conn:
+        with conn.cursor() as cur:
+            if names:
+                cur.execute(
+                    """
+                    SELECT name, trials,
+                           overall_start_date, overall_end_date, seed,
+                           record_curves, plot_dir, warmup_days, trading_days
+                    FROM test_definitions
+                    WHERE name = ANY(%s)
+                    ORDER BY name
+                    """,
+                    (names,),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT name, trials,
+                           overall_start_date, overall_end_date, seed,
+                           record_curves, plot_dir, warmup_days, trading_days
+                    FROM test_definitions
+                    ORDER BY name
+                    """
+                )
+            for r in cur.fetchall():
+                (name, trials,
+                 overall_start_date, overall_end_date, seed,
+                 record_curves, plot_dir, warmup_days, trading_days) = r
+                rows.append(
+                    TestDefinition(
+                        name=str(name),
+                        trials=int(trials),
+                        overall_start_date=str(overall_start_date),
+                        overall_end_date=str(overall_end_date),
+                        seed=(int(seed) if seed is not None else None),
+                        record_curves=bool(record_curves),
+                        plot_dir=(str(plot_dir) if plot_dir else None),
+                        warmup_days=int(warmup_days),
+                        trading_days=int(trading_days),
+                    )
+                )
+    if not rows:
+        raise ValueError("test_definitions table has no rows.")
+    return rows
+
 class BacktestSuite:
     def __init__(
         self,
-        allowlist: List[AllowedWindow],
         agent_factory: Callable[[], BaseAgent],
         initial_cash: float = 100000.0,
         commission_rate: float = 0.0005,
         seed: Optional[int] = None,
     ) -> None:
-        self.allowlist = list(allowlist)
         self.agent_factory = agent_factory
         self.initial_cash = float(initial_cash)
         self.commission_rate = float(commission_rate)
         self._rng = random.Random(seed)
 
-        # Index by symbol
-        self._by_symbol: Dict[str, List[AllowedWindow]] = {}
-        for aw in self.allowlist:
-            self._by_symbol.setdefault(aw.symbol, []).append(aw)
-
-    def sample_scenarios(
+    def sample_single_symbol_windows(
         self,
-        num_symbols: int,
-        windows_per_symbol: int,
-    ) -> List[AllowedWindow]:
-        symbols = list(self._by_symbol.keys())
-        if not symbols:
-            raise ValueError("Allowlist is empty.")
-        chosen_syms = self._rng.sample(symbols, k=min(num_symbols, len(symbols)))
-        picks: List[AllowedWindow] = []
-        for s in chosen_syms:
-            pool = self._by_symbol[s]
-            if len(pool) <= windows_per_symbol:
-                picks.extend(pool)
-            else:
-                picks.extend(self._rng.sample(pool, k=windows_per_symbol))
-        return picks
-
-    def sample_scenarios_within_range(
-        self,
-        num_symbols: int,
+        symbol: str,
         windows_per_symbol: int,
         overall_start_date: str,
         overall_end_date: str,
         warmup_days: int,
         trading_days: int,
-    ) -> List[AllowedWindow]:
-        return _pick_symbol_windows_within_range(
-            self._rng,
-            overall_start_date,
-            overall_end_date,
-            num_symbols,
-            windows_per_symbol,
-            self._by_symbol,
-            warmup_days,
-            trading_days,
-        )
+        timespan: str,
+        multiplier: int,
+    ) -> List[ScopeWindow]:
+        start_dt = pd.to_datetime(overall_start_date)
+        end_dt = pd.to_datetime(overall_end_date)
+        total_days = int(warmup_days) + int(trading_days)
+        max_start = end_dt - pd.Timedelta(days=total_days)
+        if max_start < start_dt:
+            raise ValueError("Overall date range too short for warmup_days + trading_days.")
+        picks: List[ScopeWindow] = []
+        for _ in range(max(1, int(windows_per_symbol))):
+            span_days = (max_start - start_dt).days
+            offset_days = self._rng.randrange(span_days + 1) if span_days > 0 else 0
+            win_start_dt = start_dt + pd.Timedelta(days=offset_days)
+            win_end_dt = win_start_dt + pd.Timedelta(days=total_days)
+            picks.append(
+                ScopeWindow(
+                    symbol=str(symbol),
+                    start_date=win_start_dt.strftime("%Y-%m-%d"),
+                    end_date=win_end_dt.strftime("%Y-%m-%d"),
+                    timespan=str(timespan),
+                    multiplier=int(multiplier),
+                )
+            )
+        return picks
 
     def run_trial(
         self,
-        num_symbols: int,
+        symbol: str,
+        timespan: str,
+        multiplier: int,
         windows_per_symbol: int,
+        overall_start_date: str,
+        overall_end_date: str,
         record_equity_curves: bool = False,
         plot_dir: Optional[str] = None,
         warmup_days: int = 14,
         trading_days: int = 14,
     ) -> Tuple[pd.DataFrame, Optional[Dict[str, pd.DataFrame]]]:
-        scenarios = self.sample_scenarios(num_symbols=num_symbols, windows_per_symbol=windows_per_symbol)
+        scenarios = self.sample_single_symbol_windows(
+            symbol=symbol,
+            windows_per_symbol=windows_per_symbol,
+            overall_start_date=overall_start_date,
+            overall_end_date=overall_end_date,
+            warmup_days=warmup_days,
+            trading_days=trading_days,
+            timespan=timespan,
+            multiplier=multiplier,
+        )
         results: List[Dict] = []
         curves: Dict[str, pd.DataFrame] = {}
 
@@ -332,7 +457,9 @@ class BacktestSuite:
 
     def run_trial_within_range(
         self,
-        num_symbols: int,
+        symbol: str,
+        timespan: str,
+        multiplier: int,
         windows_per_symbol: int,
         overall_start_date: str,
         overall_end_date: str,
@@ -341,13 +468,15 @@ class BacktestSuite:
         warmup_days: int = 14,
         trading_days: int = 14,
     ) -> Tuple[pd.DataFrame, Optional[Dict[str, pd.DataFrame]]]:
-        scenarios = self.sample_scenarios_within_range(
-            num_symbols=num_symbols,
+        scenarios = self.sample_single_symbol_windows(
+            symbol=symbol,
             windows_per_symbol=windows_per_symbol,
             overall_start_date=overall_start_date,
             overall_end_date=overall_end_date,
             warmup_days=warmup_days,
             trading_days=trading_days,
+            timespan=timespan,
+            multiplier=multiplier,
         )
         results: List[Dict] = []
         curves: Dict[str, pd.DataFrame] = {}
@@ -439,7 +568,9 @@ class BacktestSuite:
     def run_within_overall_range(
         self,
         trials: int,
-        num_symbols: int,
+        symbol: str,
+        timespan: str,
+        multiplier: int,
         windows_per_symbol: int,
         overall_start_date: str,
         overall_end_date: str,
@@ -452,7 +583,9 @@ class BacktestSuite:
         all_curves: Dict[str, pd.DataFrame] = {}
         for t in range(trials):
             df, curves = self.run_trial_within_range(
-                num_symbols=num_symbols,
+                symbol=symbol,
+                timespan=timespan,
+                multiplier=multiplier,
                 windows_per_symbol=windows_per_symbol,
                 overall_start_date=overall_start_date,
                 overall_end_date=overall_end_date,

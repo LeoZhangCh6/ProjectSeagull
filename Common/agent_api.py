@@ -6,8 +6,9 @@ from typing import List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from ib_backtester.massive_client import get_aggregate_bars
-from ib_backtester.sharadar_client import get_sf1_series
+from Common.massive_client import get_aggregate_bars
+from Common.sharadar_client import get_sf1_series
+from .signals_manager import load_available_signals, load_available_signals_csv, build_tensor_from_signals
 
 
 @dataclass
@@ -132,4 +133,44 @@ def build_snapshot_tensor(
         return np.empty((len(base_index), 0)), [], base_index
     mat = np.column_stack([f.astype(float).values for f in features])
     return mat, names, base_index
+
+
+def build_snapshot_from_signal_ids(
+    primary_history: pd.DataFrame,
+    snapshot_end: pd.Timestamp,
+    signal_ids: List[str],
+    available_signals_csv: Optional[str] = None,
+    window_days: int = 14,
+) -> Tuple[np.ndarray, List[str], pd.DatetimeIndex]:
+    """
+    Build snapshot tensor from registered signal IDs defined in available_signals.csv.
+    """
+    if primary_history.empty or "time" not in primary_history.columns:
+        return np.empty((0, 0)), [], pd.DatetimeIndex([])
+    start_dt = (snapshot_end.normalize() - pd.Timedelta(days=int(window_days)))
+    end_dt = snapshot_end
+    base = primary_history.copy()
+    base["time"] = pd.to_datetime(base["time"])
+    base = base[(base["time"] >= start_dt) & (base["time"] <= end_dt)]
+    if base.empty:
+        return np.empty((0, 0)), [], pd.DatetimeIndex([])
+    base_index = pd.DatetimeIndex(base["time"])
+
+    # Resolve registry (prefer DB; fallback CSV)
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    default_csv = os.path.join(repo_root, "data", "available_signals.csv")
+    registry_path = available_signals_csv or default_csv
+    reg = load_available_signals(registry_path)
+
+    # Fetch and align all signals
+    df_sig, cols = build_tensor_from_signals(
+        signal_ids=signal_ids,
+        registry=reg,
+        primary_index=base_index,
+        start_date=start_dt.strftime("%Y-%m-%d"),
+        end_date=end_dt.strftime("%Y-%m-%d"),
+    )
+    if df_sig.empty:
+        return np.empty((len(base_index), 0)), [], base_index
+    return df_sig.values.astype(float), list(df_sig.columns), base_index
 

@@ -6,7 +6,7 @@ from typing import Callable, Dict, List, Optional
 import pandas as pd
 from datetime import timedelta
 
-from .massive_client import get_aggregate_bars
+from Common.massive_client import get_aggregate_bars
 from .types import Action, Contract, Order, OrderType
 
 

@@ -1,10 +1,11 @@
-from dataclasses import dataclass
-from typing import Optional
+import os, sys
 
 import numpy as np
 import pandas as pd
+from dataclasses import dataclass
+from typing import Optional
 
-from Common.agent_api import SnapshotSpec, build_snapshot_tensor
+from Common.agent_api import SnapshotSpec, build_snapshot_tensor, build_snapshot_from_signal_ids
 from ib_backtester.engine import BaseAgent
 from ib_backtester.types import Action, Order, OrderType
 
@@ -14,10 +15,6 @@ class Config:
     window_days: int = 14
     trade_cap_per_bar: int = 5
     include_primary_price: bool = True
-    # Example sources
-    massive_specs = ["SPY:day:1"]
-    csv_paths = []
-    sf1_specs = []
 
 
 class ExampleFunctionAgent(BaseAgent):
@@ -29,20 +26,22 @@ class ExampleFunctionAgent(BaseAgent):
         self.cfg = cfg or Config()
         self._last_snapshot_day: Optional[pd.Timestamp] = None
         self._snapshot_tensor: Optional[np.ndarray] = None
+        # Declare the signals this agent uses (by ID from available_signals.csv)
+        self.used_signal_ids = ["SPY_day_close", "AAPL_arq_revenue"]
+        # Define the single trading symbol and data frequency for this agent
+        self.symbol = "AAPL"
+        self.primary_timespan = "minute"
+        self.primary_multiplier = 5
 
     def _ensure_snapshot(self, history: pd.DataFrame) -> None:
         now = pd.to_datetime(history["time"].iloc[-1])
         day = now.normalize()
         if self._last_snapshot_day is not None and self._last_snapshot_day == day:
             return
-        spec = SnapshotSpec(
-            window_days=int(self.cfg.window_days),
-            include_primary_price=bool(self.cfg.include_primary_price),
-            massive_specs=self.cfg.massive_specs,
-            csv_paths=self.cfg.csv_paths,
-            sf1_specs=self.cfg.sf1_specs,
+        # Prefer building from declared registry signals for inspectability
+        mat, _names, _index = build_snapshot_from_signal_ids(
+            history, now, self.used_signal_ids, available_signals_csv=None, window_days=int(self.cfg.window_days)
         )
-        mat, _names, _index = build_snapshot_tensor(history, now, spec)
         self._snapshot_tensor = mat
         self._last_snapshot_day = day
 

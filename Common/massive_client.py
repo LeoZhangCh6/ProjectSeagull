@@ -31,30 +31,8 @@ def get_aggregate_bars(
     """
     Fetch aggregated bars from Massive (formerly Polygon.io).
 
-    Parameters
-    ----------
-    symbol : str
-        Ticker symbol, e.g., 'AAPL'.
-    start_date : str
-        Inclusive start date in 'YYYY-MM-DD'.
-    end_date : str
-        Inclusive end date in 'YYYY-MM-DD'.
-    timespan : str
-        'minute', 'hour', 'day', etc.
-    multiplier : int
-        Bar size multiplier.
-    api_key : Optional[str]
-        API key. If None, will use MASSIVE_API_KEY or POLYGON_API_KEY from env.
-    base_url : str
-        API base URL. Defaults to Polygon's; configurable for Massive.
-    adjusted : bool
-        Whether to request adjusted data.
-
-    Returns
-    -------
-    Optional[pd.DataFrame]
-        Columns: ['symbol','timestamp','time','timespan','open','high','low','close','volume','vwap','transactions','otc']
-        Sorted ascending by timestamp. None if no data.
+    Returns DataFrame with columns:
+    ['symbol','timestamp','time','timespan','open','high','low','close','volume','vwap','transactions','otc']
     """
     api_key = api_key or os.environ.get("MASSIVE_API_KEY") or os.environ.get("POLYGON_API_KEY")
     if not api_key:
@@ -93,10 +71,8 @@ def get_aggregate_bars(
             "n": "transactions",
         }
         df = df.rename(columns=rename_map)
-        # 'otc' may not be present for all symbols
-        for col in ["otc"]:
-            if col not in df.columns:
-                df[col] = False
+        if "otc" not in df.columns:
+            df["otc"] = False
         column_order = [
             "symbol",
             "timestamp",
@@ -118,5 +94,4 @@ def get_aggregate_bars(
         return None
     res = pd.concat(all_frames, ignore_index=True).sort_values("timestamp").reset_index(drop=True)
     return res
-
 
