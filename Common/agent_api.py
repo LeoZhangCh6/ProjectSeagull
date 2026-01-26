@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
+import os
 import numpy as np
 import pandas as pd
 
@@ -144,6 +145,9 @@ def build_snapshot_from_signal_ids(
 ) -> Tuple[np.ndarray, List[str], pd.DatetimeIndex]:
     """
     Build snapshot tensor from registered signal IDs defined in available_signals.csv.
+    
+    This function automatically updates the last_access_time for the requested signals
+    in the database to track signal usage.
     """
     if primary_history.empty or "time" not in primary_history.columns:
         return np.empty((0, 0)), [], pd.DatetimeIndex([])
@@ -157,10 +161,11 @@ def build_snapshot_from_signal_ids(
     base_index = pd.DatetimeIndex(base["time"])
 
     # Resolve registry (prefer DB; fallback CSV)
+    # IMPORTANT: Update access timestamps for the signals being used
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     default_csv = os.path.join(repo_root, "data", "available_signals.csv")
     registry_path = available_signals_csv or default_csv
-    reg = load_available_signals(registry_path)
+    reg = load_available_signals(registry_path, update_access_time=True, signal_ids=signal_ids)
 
     # Fetch and align all signals
     df_sig, cols = build_tensor_from_signals(

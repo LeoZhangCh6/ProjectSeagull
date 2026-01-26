@@ -56,9 +56,13 @@ def load_available_signals_csv(path: str) -> Dict[str, SignalDef]:
     return out
 
 
-def load_available_signals_db() -> Dict[str, SignalDef]:
+def load_available_signals_db(update_access_time: bool = False, signal_ids: Optional[List[str]] = None) -> Dict[str, SignalDef]:
     """
     Load available signals from Postgres table 'available_signals'.
+    
+    Args:
+        update_access_time: If True, update last_access_time for the requested signals
+        signal_ids: List of specific signal IDs to update (if None and update_access_time=True, updates all loaded signals)
     """
     out: Dict[str, SignalDef] = {}
     with get_pg_conn() as conn:
@@ -80,20 +84,40 @@ def load_available_signals_db() -> Dict[str, SignalDef]:
                     description=(str(desc) if desc else ""),
                     enabled=bool(enabled),
                 )
+            
+            # Update access timestamps if requested
+            if update_access_time and out:
+                ids_to_update = signal_ids if signal_ids else list(out.keys())
+                if ids_to_update:
+                    cur.execute(
+                        """
+                        UPDATE available_signals
+                        SET last_access_time = now()
+                        WHERE id = ANY(%s)
+                        """,
+                        (ids_to_update,)
+                    )
+                conn.commit()
+                
     if not out:
         raise ValueError("No enabled signals found in available_signals.")
     return out
 
 
-def load_available_signals(registry_csv: Optional[str] = None) -> Dict[str, SignalDef]:
+def load_available_signals(registry_csv: Optional[str] = None, update_access_time: bool = False, signal_ids: Optional[List[str]] = None) -> Dict[str, SignalDef]:
     """
     Preferred: load from Postgres if DATABASE_URL/PG* env present.
     Fallback: CSV at registry_csv argument (or raise).
+    
+    Args:
+        registry_csv: Path to CSV fallback
+        update_access_time: If True, update last_access_time for the requested signals
+        signal_ids: List of specific signal IDs to update timestamps for
     """
     try:
         # Heuristic: if DATABASE_URL or PGHOST is set, try DB
         if os.environ.get("DATABASE_URL") or os.environ.get("PGHOST"):
-            return load_available_signals_db()
+            return load_available_signals_db(update_access_time=update_access_time, signal_ids=signal_ids)
     except Exception:
         pass
     if registry_csv is None:

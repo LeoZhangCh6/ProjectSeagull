@@ -30,15 +30,23 @@ def get_sf1_series(
     """
     api_key = _get_nasdaq_api_key(api_key)
     base = "https://data.nasdaq.com/api/v3/datatables/SHARADAR/SF1.json"
-    params = {
+    # Request only needed columns and constrain date range at the API to reduce payload
+    params_raw = {
         "ticker": symbol.upper(),
         "dimension": dimension.upper(),
-        "api_key": api_key,
+        "qopts.columns": f"calendardate,{column}",
+        "calendardate.gte": start_date,
+        "calendardate.lte": end_date,
         "paginate": "true",
+        "api_key": api_key,
     }
+    params = {k: v for k, v in params_raw.items() if v is not None}
     resp = requests.get(base, params=params, timeout=30)
+    # Handle common HTTP error cases gracefully so callers can skip unavailable signals
     if resp.status_code == 429:
         raise RuntimeError("Rate limited by Nasdaq Data Link. Please slow down or try again later.")
+    if resp.status_code in (401, 403, 422):
+        return None
     resp.raise_for_status()
     payload = resp.json()
     data = payload.get("datatable", {}).get("data", [])
@@ -50,12 +58,10 @@ def get_sf1_series(
     if "calendardate" not in df.columns:
         return None
     if column not in df.columns:
-        raise ValueError(f"SF1 column '{column}' not found in response.")
+        # Column might be unavailable for this ticker/dimension or not permitted by plan
+        return None
     df["calendardate"] = pd.to_datetime(df["calendardate"])
     df = df.sort_values("calendardate")
-    start_dt = pd.to_datetime(start_date)
-    end_dt = pd.to_datetime(end_date)
-    df = df[(df["calendardate"] >= start_dt) & (df["calendardate"] <= end_dt)]
     if df.empty:
         return None
     s = pd.Series(df[column].astype(float).values, index=pd.DatetimeIndex(df["calendardate"]))

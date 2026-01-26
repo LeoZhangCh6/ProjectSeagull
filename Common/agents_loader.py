@@ -46,11 +46,15 @@ def get_agent_factory_from_registry(agent_name: str, registry_path: str):
 
 
 def get_agent_factory_from_registry_db(agent_name: str):
+    """
+    Get agent factory function from database.
+    Loads agent code from database and returns factory.
+    """
     with get_pg_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT path FROM agents_registry
+                SELECT path, code FROM agents_registry
                 WHERE name = %s AND enabled = TRUE
                 """,
                 (agent_name,),
@@ -58,9 +62,42 @@ def get_agent_factory_from_registry_db(agent_name: str):
             row = cur.fetchone()
             if not row:
                 raise KeyError(f"Agent '{agent_name}' not found in agents_registry table.")
-            path = row[0]
-            abspath = os.path.abspath(path)
-            return lambda: load_agent_from_file(abspath)
+            
+            path, code = row
+            
+            # If code exists in database, load from database
+            if code:
+                import importlib.util
+                
+                # Create a dynamic module
+                module_name = f"dynamic_agent_{agent_name}"
+                spec = importlib.util.spec_from_loader(module_name, loader=None)
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[module_name] = module
+                
+                try:
+                    # Execute code in module namespace
+                    exec(code, module.__dict__)
+                except Exception as e:
+                    del sys.modules[module_name]
+                    raise Exception(f"Failed to execute agent '{agent_name}' code from database: {e}")
+                
+                # Return factory function
+                if not hasattr(module, 'create_agent'):
+                    raise AttributeError(
+                        f"Agent '{agent_name}' code does not define create_agent() function"
+                    )
+                
+                return lambda: module.create_agent()
+            else:
+                # Legacy fallback: load from file
+                abspath = os.path.abspath(path)
+                if not os.path.exists(abspath):
+                    raise FileNotFoundError(
+                        f"Agent '{agent_name}' has no code in database and file not found: {abspath}\n"
+                        f"Please re-register this agent using the Agent Builder GUI."
+                    )
+                return lambda: load_agent_from_file(abspath)
 
 
 def _import_module_from_path(path: str) -> ModuleType:
