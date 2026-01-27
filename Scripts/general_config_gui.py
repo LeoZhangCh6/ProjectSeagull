@@ -2,9 +2,10 @@
 General Configuration GUI for ProjectSeagull.
 
 Provides tabbed interface for:
-1. Signal Management - Register and manage signals
+1. Job Management - Assign agents to tests and run backtests
 2. Test Definitions - Create and manage test configurations
-3. Job Management - Assign agents to tests
+3. Signal Management - Register and manage signals
+4. Agent Builder - Register and clone agents
 
 Usage:
     python Scripts/general_config_gui.py
@@ -59,9 +60,9 @@ class GeneralConfigGUI:
         self.agents_tab = AgentBuilderTab(self.notebook)
         
         # Add tabs to notebook
-        self.notebook.add(self.signals_tab.frame, text="  Signals  ")
-        self.notebook.add(self.tests_tab.frame, text="  Test Definitions  ")
         self.notebook.add(self.jobs_tab.frame, text="  Jobs  ")
+        self.notebook.add(self.tests_tab.frame, text="  Test Definitions  ")
+        self.notebook.add(self.signals_tab.frame, text="  Signals  ")
         self.notebook.add(self.agents_tab.frame, text="  Agent Builder  ")
 
 
@@ -616,8 +617,9 @@ class JobsTab:
                   command=self._create_job, width=20).grid(row=0, column=0, padx=5)
         ttk.Button(action_frame, text="Delete Job", 
                   command=self._delete_job, width=20).grid(row=0, column=1, padx=5)
-        ttk.Button(action_frame, text="View All Jobs", 
-                  command=self._view_jobs, width=20).grid(row=0, column=2, padx=5)
+        ttk.Button(action_frame, text="▶ Run Backtest", 
+                  command=self._run_backtest, width=20, 
+                  style="Accent.TButton").grid(row=0, column=2, padx=5)
         
         # Jobs list
         list_frame = ttk.LabelFrame(self.frame, text="Current Jobs", padding="5")
@@ -744,9 +746,65 @@ class JobsTab:
         except Exception as e:
             self._log(f"✗ Error loading jobs: {e}", "ERROR")
     
-    def _view_jobs(self):
-        """View all jobs in detail."""
-        self._load_jobs()
+    def _run_backtest(self):
+        """Run backtest using current jobs configuration."""
+        # Check if there are jobs to run
+        try:
+            with get_pg_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT COUNT(*) FROM test_jobs")
+                    job_count = cur.fetchone()[0]
+            
+            if job_count == 0:
+                messagebox.showwarning("No Jobs", "No jobs configured. Please create at least one job first.")
+                return
+            
+            # Confirm run
+            confirm = messagebox.askyesno(
+                "Run Backtest", 
+                f"Run backtest with {job_count} job(s)?\n\n"
+                "This will execute Scripts/run_backtest.py.\n"
+                "Check the console/terminal for output."
+            )
+            if not confirm:
+                return
+            
+            self._log("Starting backtest...")
+            
+            # Run backtest in a separate thread to avoid blocking UI
+            def run_in_thread():
+                import subprocess
+                try:
+                    # Get project root and root window
+                    script_dir = os.path.dirname(os.path.abspath(__file__))
+                    project_root = os.path.dirname(script_dir)
+                    backtest_script = os.path.join(script_dir, "run_backtest.py")
+                    root = self.frame.winfo_toplevel()
+                    
+                    # Run the script
+                    root.after(0, lambda: self._log(f"Executing: python {backtest_script}"))
+                    result = subprocess.run(
+                        ["python", backtest_script],
+                        cwd=project_root,
+                        capture_output=False,  # Show output in terminal
+                        text=True
+                    )
+                    
+                    if result.returncode == 0:
+                        root.after(0, lambda: self._log("[OK] Backtest completed successfully!", "SUCCESS"))
+                    else:
+                        root.after(0, lambda: self._log(f"[X] Backtest exited with code {result.returncode}", "ERROR"))
+                
+                except Exception as e:
+                    root = self.frame.winfo_toplevel()
+                    root.after(0, lambda: self._log(f"[X] Error running backtest: {e}", "ERROR"))
+            
+            thread = threading.Thread(target=run_in_thread, daemon=True)
+            thread.start()
+            
+        except Exception as e:
+            self._log(f"[X] Error: {e}", "ERROR")
+            messagebox.showerror("Error", str(e))
     
     def _log(self, message: str, level: str = "INFO"):
         """Log message."""

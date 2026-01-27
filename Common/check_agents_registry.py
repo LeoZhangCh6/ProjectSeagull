@@ -2,7 +2,7 @@
 Quick diagnostic script to check agents_registry table status.
 
 Usage:
-    python Scripts/check_agents_registry.py
+    python Common/check_agents_registry.py
 """
 
 import os

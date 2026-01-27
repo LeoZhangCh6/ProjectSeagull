@@ -326,6 +326,37 @@ def load_test_definitions_db(names: Optional[List[str]] = None) -> List[TestDefi
         raise ValueError("test_definitions table has no rows.")
     return rows
 
+
+def load_test_jobs_db(names: Optional[List[str]] = None) -> List[Tuple[str, str]]:
+    """
+    Load (test_name, agent_name) job pairs from test_jobs.
+    If names is provided, filter to those test_names only.
+    """
+    jobs: List[Tuple[str, str]] = []
+    with _db.get_pg_conn() as conn:
+        with conn.cursor() as cur:
+            if names:
+                cur.execute(
+                    """
+                    SELECT test_name, agent_name
+                    FROM test_jobs
+                    WHERE test_name = ANY(%s)
+                    ORDER BY test_name, agent_name
+                    """,
+                    (names,),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT test_name, agent_name
+                    FROM test_jobs
+                    ORDER BY test_name, agent_name
+                    """
+                )
+            for (tname, aname) in cur.fetchall():
+                jobs.append((str(tname), str(aname)))
+    return jobs
+
 class BacktestSuite:
     def __init__(
         self,

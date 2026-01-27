@@ -207,4 +207,7 @@ Examples:
 
 
 if __name__ == "__main__":
+    os.environ['MASSIVE_API_KEY'] = "Y2mALom8TLdet7Bc8ktLeQ4355hAdpG6"
+    os.environ['NASDAQ_DATA_LINK_API_KEY'] = "s_phvq25xVMyCa6KBXFj"
+    os.environ["DATABASE_URL"] = "postgresql://postgres:5369@localhost:5432/postgres"
     sys.exit(main())

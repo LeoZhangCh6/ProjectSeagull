@@ -14,7 +14,7 @@ try:
             "sessionId": "debug-session",
             "runId": "pre-fix",
             "hypothesisId": "H1",
-            "location": "Backtesting/run_suite.py:bootstrap",
+            "location": "Scripts/run_backtest.py:bootstrap",
             "message": "Bootstrap sys.path and Common visibility",
             "data": {
                 "cwd": os.getcwd(),
@@ -31,13 +31,14 @@ except Exception:
 
 import pandas as pd
 
-from ib_backtester.suite import (
+from Backtesting.ib_backtester.suite import (
     BacktestSuite,
     load_test_definitions_db,
+    load_test_jobs_db,
 )
-from ib_backtester.agents.sample_agent import SmaCrossAgent
-from ib_backtester.agents.multisignal_agent import MultiSignalAgent, ExternalDataConfig
-from ib_backtester.agents.multi_source_model_agent import MultiSourceModelAgent, MultiSourceConfig
+from Backtesting.ib_backtester.agents.sample_agent import SmaCrossAgent
+from Backtesting.ib_backtester.agents.multisignal_agent import MultiSignalAgent, ExternalDataConfig
+from Backtesting.ib_backtester.agents.multi_source_model_agent import MultiSourceModelAgent, MultiSourceConfig
 from Common.reporting import generate_test_report
 from Common.agents_registry import get_agent_factory
 from Common.agents_loader import get_agent_factory_from_registry
@@ -51,14 +52,16 @@ def main():
     select_names = os.environ.get("BACKTEST_TEST_NAMES", "")
     selected = {s.strip() for s in select_names.split(",") if s.strip()} if select_names else None
 
-    # Always load test definitions from Postgres (optionally filtered by BACKTEST_TEST_NAMES)
+    # Always load jobs and test definitions from Postgres (optionally filtered by BACKTEST_TEST_NAMES)
     try:
         sel_list = sorted(selected) if selected else None
+        jobs = load_test_jobs_db(sel_list)
+        if selected and not jobs:
+            raise ValueError(f"No matching test jobs found for names: {sel_list}")
         test_types = load_test_definitions_db(sel_list)
-        if selected and not test_types:
-            raise ValueError(f"No matching test definitions found for names: {sel_list}")
+        defs_by_name = {t.name: t for t in test_types}
     except Exception as e:
-        raise RuntimeError("Failed to load test definitions from Postgres. Ensure DATABASE_URL or PG* env vars are set and the DB is initialized (Scripts/init_db.py).") from e
+        raise RuntimeError("Failed to load jobs/definitions from Postgres. Ensure DATABASE_URL or PG* env vars are set and the DB is initialized (Scripts/init_db.py).") from e
 
     all_results = []
     all_curves = {}
@@ -75,7 +78,12 @@ def main():
         except Exception:
             pass
 
-    for cfg in test_types:
+    # Iterate over (test_name, agent_name) jobs; group by test_name
+    for (test_name, agent_name_from_job) in jobs:
+        cfg = defs_by_name.get(test_name)
+        if not cfg:
+            print(f"Skipping job ({test_name}, {agent_name_from_job}) missing test definition.")
+            continue
         # Propagate testbench seed to agents (used for model RNG initialization)
         try:
             if cfg.seed is not None:
@@ -86,63 +94,18 @@ def main():
         except Exception:
             pass
 
-        # Agent selection via env registry
-        agent_factory = get_agent_factory()
+        # Agent selection: from registry DB by agent_name in job
+        try:
+            from Common.agents_loader import get_agent_factory_from_registry_db
+            agent_factory = get_agent_factory_from_registry_db(agent_name_from_job)
+        except Exception as _:
+            print(f"Skipping job ({test_name}, {agent_name_from_job}) – agent not found in registry.")
+            continue
         # Probe an instance to describe agent for the report
         agent_probe = agent_factory()
-        agent_name = type(agent_probe).__name__
+        agent_name = agent_name_from_job or type(agent_probe).__name__
         agent_info = {}
-        try:
-            if isinstance(agent_probe, SmaCrossAgent):
-                agent_info = {
-                    "type": "SmaCrossAgent",
-                    "params": {
-                        "fast": getattr(agent_probe, "fast", None),
-                        "slow": getattr(agent_probe, "slow", None),
-                        "trade_size": getattr(agent_probe, "trade_size", None),
-                    },
-                    "signals": ["primary_close_SMA_fast", "primary_close_SMA_slow"],
-                }
-            elif isinstance(agent_probe, MultiSignalAgent):
-                ext = getattr(agent_probe, "external", None)
-                agent_info = {
-                    "type": "MultiSignalAgent",
-                    "params": {
-                        "primary_fast": getattr(agent_probe, "primary_fast", None),
-                        "primary_slow": getattr(agent_probe, "primary_slow", None),
-                        "peer_momentum_window": getattr(agent_probe, "peer_momentum_window", None),
-                        "trade_size": getattr(agent_probe, "trade_size", None),
-                    },
-                    "sources": {
-                        "peer_symbol": getattr(ext, "peer_symbol", None) if ext else None,
-                        "peer_timespan": getattr(ext, "peer_timespan", None) if ext else None,
-                        "peer_multiplier": getattr(ext, "peer_multiplier", None) if ext else None,
-                        "sf1_csv_path": getattr(ext, "sf1_csv_path", None) if ext else None,
-                    },
-                }
-            elif isinstance(agent_probe, MultiSourceModelAgent):
-                cfg_obj = getattr(agent_probe, "config", None)
-                agent_info = {
-                    "type": "MultiSourceModelAgent",
-                    "config": {
-                        "window_days": getattr(cfg_obj, "window_days", None) if cfg_obj else None,
-                        "include_primary_price": getattr(cfg_obj, "include_primary_price", None) if cfg_obj else None,
-                        "trade_cap_per_bar": getattr(cfg_obj, "trade_cap_per_bar", None) if cfg_obj else None,
-                        "massive_specs": getattr(cfg_obj, "massive_specs", None) if cfg_obj else None,
-                        "sf1_specs": getattr(cfg_obj, "sf1_specs", None) if cfg_obj else None,
-                        "csv_paths": getattr(cfg_obj, "csv_paths", None) if cfg_obj else None,
-                    },
-                }
 
-            # Include declared registry signals if present on any agent instance
-            if hasattr(agent_probe, "used_signal_ids"):
-                try:
-                    agent_info["used_signal_ids"] = list(getattr(agent_probe, "used_signal_ids"))
-                except Exception:
-                    pass
-
-        except Exception:
-            agent_info = {"type": agent_name}
 
         # Resolve test scope per test (DB) or reuse CSV scope (non-DB)
         overall_start_for_run = cfg.overall_start_date
@@ -186,8 +149,8 @@ def main():
             trading_days=cfg.trading_days,
         )
         
-        results_df = results_df.assign(test_name=cfg.name)
-        print(f"Results for test '{cfg.name}':")
+        results_df = results_df.assign(test_name=test_name, agent=agent_name)
+        print(f"Results for job test='{test_name}', agent='{agent_name}':")
         print(results_df)
 
         all_results.append(results_df)
@@ -220,6 +183,7 @@ if __name__ == "__main__":
     # Requires MASSIVE_API_KEY or POLYGON_API_KEY in environment
     os.environ['MASSIVE_API_KEY'] = "Y2mALom8TLdet7Bc8ktLeQ4355hAdpG6"
     os.environ['NASDAQ_DATA_LINK_API_KEY'] = "s_phvq25xVMyCa6KBXFj"
+    os.environ["DATABASE_URL"] = "postgresql://postgres:5369@localhost:5432/postgres"
     main()
     
     

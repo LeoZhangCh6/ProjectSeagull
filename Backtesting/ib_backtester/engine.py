@@ -105,6 +105,19 @@ class IBFacade:
         return self._env.get_data(contract)
 
     def placeOrder(self, orderId: int, contract: Contract, order: Order) -> None:
+        """
+        Place an order.
+        
+        Args:
+            orderId: Unique order identifier
+            contract: Contract to trade
+            order: Order details (action, quantity, type, etc.)
+            
+        Note:
+            SELL orders will be rejected if:
+            - Current position is <= 0 (no shares held)
+            - Order quantity exceeds current position (insufficient shares)
+        """
         self._env._submit_order(orderId, contract, order)
 
 
@@ -164,11 +177,35 @@ class IBBacktestEnv:
         )
 
     def buy(self, quantity: int) -> int:
+        """
+        Place a market buy order.
+        
+        Args:
+            quantity: Number of shares to buy
+            
+        Returns:
+            Order ID
+        """
         oid = self.ib.nextOrderId()
         self._submit_order(oid, self.contract, Order(action=Action.BUY, totalQuantity=quantity, orderType=OrderType.MKT))
         return oid
 
     def sell(self, quantity: int) -> int:
+        """
+        Place a market sell order.
+        
+        Args:
+            quantity: Number of shares to sell
+            
+        Returns:
+            Order ID
+            
+        Note:
+            Orders will be rejected if:
+            - Current position is <= 0 (no shares held)
+            - Quantity exceeds current position (insufficient shares)
+            Agents should check their position before selling.
+        """
         oid = self.ib.nextOrderId()
         self._submit_order(oid, self.contract, Order(action=Action.SELL, totalQuantity=quantity, orderType=OrderType.MKT))
         return oid
@@ -201,6 +238,18 @@ class IBBacktestEnv:
                 remaining.append(item)
                 continue
             order: Order = item["order"]
+            
+            # Validate: cannot sell shares you don't hold
+            if order.action == Action.SELL:
+                if self.broker.position <= 0:
+                    # Reject sell order if no position
+                    print(f"[WARNING] Order {item['orderId']} REJECTED: Cannot SELL {order.totalQuantity} shares - current position is {self.broker.position}")
+                    continue
+                elif order.totalQuantity > self.broker.position:
+                    # Reject sell order if quantity exceeds position
+                    print(f"[WARNING] Order {item['orderId']} REJECTED: Cannot SELL {order.totalQuantity} shares - only {self.broker.position} shares available")
+                    continue
+            
             if order.orderType == OrderType.MKT:
                 self.broker.market_fill(order.action, int(order.totalQuantity), bar_open, ts, item["orderId"])
             elif order.orderType == OrderType.LMT and order.lmtPrice is not None:
