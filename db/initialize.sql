@@ -4,13 +4,14 @@
 -- Create tables
 
 CREATE TABLE IF NOT EXISTS available_signals (
-  id           text PRIMARY KEY,
-  source       text NOT NULL CHECK (source IN ('massive','sf1')),
-  spec         text NOT NULL,
-  model_freq   text,                   -- e.g., '1D','1H','15T'
-  description  text,
-  enabled      boolean NOT NULL DEFAULT true,
-  created_at   timestamptz NOT NULL DEFAULT now()
+  id               text PRIMARY KEY,
+  source           text NOT NULL CHECK (source IN ('massive','sf1')),
+  spec             text NOT NULL,
+  model_freq       text,                   -- e.g., '1D','1H','15T'
+  description      text,
+  enabled          boolean NOT NULL DEFAULT true,
+  created_at       timestamptz NOT NULL DEFAULT now(),
+  last_access_time timestamptz             -- tracks when signal was last used by an agent
 );
 
 -- Revised test_scope schema: key by test_name, and a child table for symbols.
@@ -18,7 +19,8 @@ CREATE TABLE IF NOT EXISTS available_signals (
 
 CREATE TABLE IF NOT EXISTS agents_registry (
   name         text PRIMARY KEY,
-  path         text NOT NULL,          -- relative or absolute path to agent .py file
+  path         text NOT NULL,          -- reference path (e.g., 'db://agents/{name}')
+  code         text,                   -- Python source code stored in database
   description  text,
   enabled      boolean NOT NULL DEFAULT true,
   created_at   timestamptz NOT NULL DEFAULT now()
@@ -32,7 +34,6 @@ CREATE TABLE IF NOT EXISTS test_definitions (
   seed                 integer,
   record_curves        boolean NOT NULL DEFAULT false,
   plot_dir             text,
-  warmup_days          integer NOT NULL DEFAULT 14,
   trading_days         integer NOT NULL DEFAULT 14,
   created_at           timestamptz NOT NULL DEFAULT now()
 );
@@ -63,10 +64,13 @@ SET source = EXCLUDED.source,
 
 -- (no test_scope seeds; agents choose their own symbol per test)
 
--- Seed: agents_registry (from Agents/registry.csv)
+-- Seed: agents_registry
+-- NOTE: All .py files from Agents/instances/ are automatically registered
+-- with their code uploaded to the database when running init_db.py
+-- The entries below are legacy seeds and will be overwritten by auto-registration
 
 INSERT INTO agents_registry (name, path, description, enabled) VALUES
-  ('example_function','Agents/instances/example_function_agent.py','Example instance agent using registry signals', true)
+  ('example_function_agent','db://agents/example_function_agent','Example instance agent using registry signals', true)
 ON CONFLICT (name) DO UPDATE
 SET path = EXCLUDED.path,
     description = EXCLUDED.description,
@@ -76,10 +80,10 @@ SET path = EXCLUDED.path,
 
 INSERT INTO test_definitions (
   name, trials, overall_start_date, overall_end_date,
-  seed, record_curves, plot_dir, warmup_days, trading_days
+  seed, record_curves, plot_dir, trading_days
 ) VALUES
-  ('quick',    1, '2023-01-01','2023-06-30', 42, false, 'D:\Users\zhang\output data from project seagull', 7, 7),
-  ('standard', 3, '2022-01-01','2022-12-31', 42, true,  'D:\Users\zhang\output data from project seagull', 14, 14)
+  ('quick',    1, '2023-01-01','2023-06-30', 42, false, 'D:\Users\zhang\output data from project seagull', 7),
+  ('standard', 3, '2022-01-01','2022-12-31', 42, true,  'D:\Users\zhang\output data from project seagull', 14)
 ON CONFLICT (name) DO UPDATE
 SET trials = EXCLUDED.trials,
     overall_start_date = EXCLUDED.overall_start_date,
@@ -87,11 +91,10 @@ SET trials = EXCLUDED.trials,
     seed = EXCLUDED.seed,
     record_curves = EXCLUDED.record_curves,
     plot_dir = EXCLUDED.plot_dir,
-    warmup_days = EXCLUDED.warmup_days,
     trading_days = EXCLUDED.trading_days;
 
 -- Seed: test_jobs mapping agents to tests
 INSERT INTO test_jobs (test_name, agent_name) VALUES
-  ('quick','example_function'),
-  ('standard','example_function')
+  ('quick','example_function_agent'),
+  ('standard','example_function_agent')
 ON CONFLICT (test_name, agent_name) DO NOTHING;

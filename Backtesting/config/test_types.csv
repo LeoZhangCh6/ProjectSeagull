@@ -1,4 +1,3 @@
-name,trials,num_symbols,windows_per_symbol,overall_start_date,overall_end_date,seed,record_curves,plot_dir,warmup_days,trading_days
-quick,1,1,1,2023-01-01,2023-06-30,42,0,D:\Users\zhang\output data from project seagull,7,7
-standard,3,2,1,2022-01-01,2022-12-31,42,1,D:\Users\zhang\output data from project seagull,14,14
-,,,,,,,,,,
+name,trials,num_symbols,windows_per_symbol,overall_start_date,overall_end_date,seed,record_curves,plot_dir,trading_days
+quick,1,1,1,2023-01-01,2023-06-30,42,0,D:\Users\zhang\output data from project seagull,7
+standard,3,2,1,2022-01-01,2022-12-31,42,1,D:\Users\zhang\output data from project seagull,14

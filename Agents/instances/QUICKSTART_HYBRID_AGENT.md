@@ -48,7 +48,7 @@ python Scripts/general_config_gui.py
 
 ```bash
 set BACKTEST_TEST_NAMES=hybrid_test
-python Backtesting/run_suite.py
+python Scripts/run_backtest.py
 ```
 
 ### Step 4: Visualize (30 seconds)

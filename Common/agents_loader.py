@@ -4,6 +4,13 @@ import sys
 from types import ModuleType
 from typing import Any
 
+# Ensure Backtesting package (which contains `ib_backtester`) is importable
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(_HERE)
+_BACKTESTING_DIR = os.path.join(_PROJECT_ROOT, "Backtesting")
+if _BACKTESTING_DIR not in sys.path:
+    sys.path.insert(0, _BACKTESTING_DIR)
+
 from ib_backtester.engine import BaseAgent
 from .db import get_pg_conn
 

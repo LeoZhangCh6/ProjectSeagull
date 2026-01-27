@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Optional
 
 import pandas as pd
 from datetime import timedelta
@@ -18,6 +18,14 @@ class FillReport:
     price: float
     commission: float
     timestamp: int
+
+
+@dataclass
+class AgentState:
+    """Snapshot of agent's internal state at a given bar, for visualization."""
+    timestamp: int
+    time: str
+    custom: Dict[str, Any] = field(default_factory=dict)  # Agent-defined state variables
 
 
 class BacktestBroker:
@@ -153,25 +161,40 @@ class IBBacktestEnv:
         first_symbol = self.data["symbol"].iloc[0]
         self.contract = Contract(symbol=str(first_symbol))
 
-        # Performance
+        # Performance tracking
         self.portfolio_history: List[Dict] = []
+        
+        # Agent state history for visualization
+        self.agent_states: List[AgentState] = []
 
-        # Warmup/trading segmentation (set during run)
-        self.trading_start_index: int = 0
+        # Trading window timestamps (for plotting)
         self.trading_start_timestamp: Optional[int] = None
-        self._allow_trading: bool = False
+        self.trading_end_timestamp: Optional[int] = None
 
     def get_data(self, contract: Contract) -> pd.DataFrame:
         assert contract.symbol == self.contract.symbol, "Single-symbol backtester only"
         return self.data.copy()
+    
+    def record_agent_state(self, custom: Dict[str, Any]) -> None:
+        """
+        Record agent's internal state at current bar for visualization.
+        Agents should call this in on_bar() to log their decision state.
+        
+        Args:
+            custom: Dictionary of agent-defined state variables (e.g., signals, predictions)
+        """
+        if 0 <= self.current_index < len(self.data):
+            row = self.data.iloc[self.current_index]
+            self.agent_states.append(AgentState(
+                timestamp=int(row["timestamp"]),
+                time=str(row["time"]),
+                custom=custom.copy(),
+            ))
 
     def _submit_order(self, orderId: int, contract: Contract, order: Order) -> None:
         assert contract.symbol == self.contract.symbol, "Single-symbol backtester only"
-        # If before trading window, queue for first trading bar; else next bar
-        if self.current_index < self.trading_start_index:
-            exec_index = min(self.trading_start_index, len(self.data) - 1)
-        else:
-            exec_index = min(self.current_index + 1, len(self.data) - 1)
+        # Orders execute on next bar
+        exec_index = min(self.current_index + 1, len(self.data) - 1)
         self.pending_orders.append(
             {"orderId": orderId, "contract": contract, "order": order, "exec_index": exec_index}
         )
@@ -263,44 +286,102 @@ class IBBacktestEnv:
                 pass
         self.pending_orders = remaining
 
-    def run(self, agent: "BaseAgent", warmup_days: int = 14, trading_days: int = 14) -> pd.DataFrame:
+    def run(self, agent: "BaseAgent", trading_days: int = 14) -> pd.DataFrame:
+        """
+        Run backtest simulation.
+        
+        At the beginning of each day, agents receive a daily snapshot of available signals.
+        They can trade throughout the day until trading_days have elapsed.
+        
+        Args:
+            agent: The trading agent to run
+            trading_days: Number of trading days to simulate
+            
+        Returns:
+            DataFrame with portfolio history (equity curve)
+        """
         agent.on_start(self.ib, self.contract)
-        # Determine trading start based on warmup_days
+        
+        # Trading starts from the first bar
         first_time = pd.to_datetime(self.data["time"].iloc[0])
-        cutoff_time = first_time + timedelta(days=int(warmup_days))
-        # first index with time >= cutoff_time
+        self.trading_start_timestamp = int(self.data["timestamp"].iloc[0])
+        
+        # Determine trading end based on trading_days
         times = pd.to_datetime(self.data["time"])
-        idx_list = times.index[times >= cutoff_time].tolist()
-        self.trading_start_index = idx_list[0] if len(idx_list) > 0 else len(self.data) - 1
-        self.trading_start_timestamp = int(self.data["timestamp"].iloc[self.trading_start_index])
-        # Determine trading end based on trading_days after cutoff_time
-        trading_end_time = cutoff_time + timedelta(days=int(trading_days))
+        trading_end_time = first_time + timedelta(days=int(trading_days))
         end_idx_list = times.index[times >= trading_end_time].tolist()
         trading_end_index = end_idx_list[0] if len(end_idx_list) > 0 else len(self.data) - 1
-        self.trading_end_timestamp: Optional[int] = int(self.data["timestamp"].iloc[trading_end_index])
+        self.trading_end_timestamp = int(self.data["timestamp"].iloc[trading_end_index])
+        
+        # Track current day for daily signal snapshots
+        current_day: Optional[str] = None
 
         for i in range(len(self.data)):
             self.current_index = i
-            self._allow_trading = i >= self.trading_start_index
+            row = self.data.iloc[i]
+            bar_day = pd.to_datetime(row["time"]).strftime("%Y-%m-%d")
+            
+            # Notify agent of new day (for daily signal snapshot)
+            if bar_day != current_day:
+                current_day = bar_day
+                if hasattr(agent, "on_day_start"):
+                    agent.on_day_start(self.ib, self.contract, current_day)
+            
             # Agent observes current bar snapshot
             agent.on_bar(self.ib, self.contract, self.data.iloc[: i + 1].copy())
+            
             # Then orders execute on next bar open
             self._process_orders_for_bar(i)
             self._mark_to_market(i)
+            
             if i >= trading_end_index:
                 break
+                
         agent.on_end(self.ib, self.contract)
         return pd.DataFrame(self.portfolio_history)
 
 
 class BaseAgent:
+    """
+    Base class for trading agents.
+    
+    Agents receive daily signal snapshots at the start of each day via on_day_start(),
+    then trade throughout the day via on_bar() calls.
+    
+    To enable state visualization in plots, call env.record_agent_state() in on_bar()
+    with a dict of your agent's internal state (signals, predictions, etc).
+    """
+    
     def on_start(self, ib: IBFacade, contract: Contract) -> None:
+        """Called once at the beginning of the backtest."""
+        pass
+    
+    def on_day_start(self, ib: IBFacade, contract: Contract, date: str) -> None:
+        """
+        Called at the start of each trading day.
+        
+        Use this to fetch/refresh daily signal snapshots before intraday trading.
+        
+        Args:
+            ib: IB facade for placing orders and getting portfolio state
+            contract: The trading contract
+            date: The current date in YYYY-MM-DD format
+        """
         pass
 
     def on_bar(self, ib: IBFacade, contract: Contract, history: pd.DataFrame) -> None:
+        """
+        Called for each bar during the simulation.
+        
+        Args:
+            ib: IB facade for placing orders and getting portfolio state
+            contract: The trading contract  
+            history: OHLCV data up to and including the current bar
+        """
         pass
 
     def on_end(self, ib: IBFacade, contract: Contract) -> None:
+        """Called once at the end of the backtest."""
         pass
 
 

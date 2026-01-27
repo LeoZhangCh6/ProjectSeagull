@@ -364,7 +364,6 @@ class TestDefinitionsTab:
         self.seed_var = tk.StringVar()
         self.record_curves_var = tk.BooleanVar(value=False)
         self.plot_dir_var = tk.StringVar()
-        self.warmup_days_var = tk.IntVar(value=14)
         self.trading_days_var = tk.IntVar(value=14)
         
         self._build_ui()
@@ -424,16 +423,10 @@ class TestDefinitionsTab:
             row=0, column=1, sticky=tk.W, padx=(5, 0)
         )
         
-        # Warmup days
-        ttk.Label(form_frame, text="Warmup Days:").grid(row=7, column=0, sticky=tk.W, padx=5, pady=3)
-        ttk.Spinbox(form_frame, from_=0, to=365, textvariable=self.warmup_days_var, width=10).grid(
-            row=7, column=1, sticky=tk.W, padx=5, pady=3
-        )
-        
         # Trading days
-        ttk.Label(form_frame, text="Trading Days:").grid(row=8, column=0, sticky=tk.W, padx=5, pady=3)
+        ttk.Label(form_frame, text="Trading Days:").grid(row=7, column=0, sticky=tk.W, padx=5, pady=3)
         ttk.Spinbox(form_frame, from_=1, to=365, textvariable=self.trading_days_var, width=10).grid(
-            row=8, column=1, sticky=tk.W, padx=5, pady=3
+            row=7, column=1, sticky=tk.W, padx=5, pady=3
         )
         
         # Actions
@@ -487,7 +480,6 @@ class TestDefinitionsTab:
         seed = self.seed_var.get().strip() or None
         record_curves = self.record_curves_var.get()
         plot_dir = self.plot_dir_var.get().strip() or None
-        warmup_days = self.warmup_days_var.get()
         trading_days = self.trading_days_var.get()
         
         if not all([name, start_date, end_date]):
@@ -501,8 +493,8 @@ class TestDefinitionsTab:
                         """
                         INSERT INTO test_definitions 
                         (name, trials, overall_start_date, overall_end_date, seed, 
-                         record_curves, plot_dir, warmup_days, trading_days)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         record_curves, plot_dir, trading_days)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (name) DO UPDATE
                         SET trials = EXCLUDED.trials,
                             overall_start_date = EXCLUDED.overall_start_date,
@@ -510,11 +502,10 @@ class TestDefinitionsTab:
                             seed = EXCLUDED.seed,
                             record_curves = EXCLUDED.record_curves,
                             plot_dir = EXCLUDED.plot_dir,
-                            warmup_days = EXCLUDED.warmup_days,
                             trading_days = EXCLUDED.trading_days
                         """,
                         (name, trials, start_date, end_date, seed, record_curves, 
-                         plot_dir, warmup_days, trading_days)
+                         plot_dir, trading_days)
                     )
                 conn.commit()
             
@@ -542,7 +533,7 @@ class TestDefinitionsTab:
                     cur.execute(
                         """
                         SELECT name, trials, overall_start_date, overall_end_date, 
-                               warmup_days, trading_days
+                               trading_days
                         FROM test_definitions 
                         ORDER BY created_at DESC
                         """
@@ -551,16 +542,15 @@ class TestDefinitionsTab:
             
             viewer = tk.Toplevel(self.frame)
             viewer.title("Existing Test Definitions")
-            viewer.geometry("900x400")
+            viewer.geometry("800x400")
             
             tree = ttk.Treeview(viewer, 
-                              columns=("name", "trials", "start", "end", "warmup", "trading"),
+                              columns=("name", "trials", "start", "end", "trading"),
                               show="headings")
             tree.heading("name", text="Name")
             tree.heading("trials", text="Trials")
             tree.heading("start", text="Start Date")
             tree.heading("end", text="End Date")
-            tree.heading("warmup", text="Warmup Days")
             tree.heading("trading", text="Trading Days")
             
             for test in tests:
@@ -1603,7 +1593,7 @@ def main():
         print("ERROR: DATABASE_URL or PGHOST environment variable not set.")
         print("Please configure database connection before running this tool.")
         return
-    
+         
     root = tk.Tk()
     app = GeneralConfigGUI(root)
     root.mainloop()

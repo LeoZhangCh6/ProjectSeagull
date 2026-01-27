@@ -36,11 +36,7 @@ from Backtesting.ib_backtester.suite import (
     load_test_definitions_db,
     load_test_jobs_db,
 )
-from Backtesting.ib_backtester.agents.sample_agent import SmaCrossAgent
-from Backtesting.ib_backtester.agents.multisignal_agent import MultiSignalAgent, ExternalDataConfig
-from Backtesting.ib_backtester.agents.multi_source_model_agent import MultiSourceModelAgent, MultiSourceConfig
 from Common.reporting import generate_test_report
-from Common.agents_registry import get_agent_factory
 from Common.agents_loader import get_agent_factory_from_registry
 
 
@@ -145,7 +141,6 @@ def main():
             overall_end_date=overall_end_for_run,
             record_equity_curves=cfg.record_curves,
             plot_dir=cfg.plot_dir,
-            warmup_days=cfg.warmup_days,
             trading_days=cfg.trading_days,
         )
         

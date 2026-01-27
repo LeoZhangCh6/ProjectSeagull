@@ -120,7 +120,7 @@ def main():
     
     # Run test agent
     agent = PositionTestAgent()
-    results = env.run(agent, warmup_days=0, trading_days=365)
+    results = env.run(agent, trading_days=365)
     
     print("\n=== Trade History ===")
     for i, trade in enumerate(env.broker.trades, 1):

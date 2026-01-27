@@ -1,4 +1,5 @@
 import os
+import sys
 from datetime import datetime
 
 import pandas as pd
@@ -46,5 +47,32 @@ def main():
 
 
 if __name__ == "__main__":
+    # region agent log
+    try:
+        _dbg_log_path = r"c:\Users\Tianyi Zhang\Desktop\Project Highball\ProjectSeagull\.cursor\debug.log"
+        _here = os.path.dirname(os.path.abspath(__file__))
+        _project_root = os.path.dirname(_here)
+        if _project_root not in sys.path:
+            sys.path.insert(0, _project_root)
+        with open(_dbg_log_path, "a", encoding="utf-8") as _f:
+            import json, time
+            _f.write(json.dumps({
+                "sessionId": "debug-session",
+                "runId": "pre-fix",
+                "hypothesisId": "H1",
+                "location": "LiveTrading/run_live.py:bootstrap",
+                "message": "Bootstrap sys.path and Common visibility",
+                "data": {
+                    "cwd": os.getcwd(),
+                    "here": _here,
+                    "project_root": _project_root,
+                    "common_exists": os.path.isdir(os.path.join(_project_root, "Common")),
+                    "sys_path_head": sys.path[:5],
+                },
+                "timestamp": int(time.time() * 1000)
+            }) + "\n")
+    except Exception:
+        pass
+    # endregion
     main()
 

@@ -123,7 +123,7 @@ Scripts\launch_config_gui.bat  (Windows)
 **Create backtest configurations**
 
 - Define test name, trials, date ranges
-- Configure warmup/trading days
+- Configure trading days
 - Set plot directories (with file browser)
 - Enable/disable equity curve recording
 
@@ -133,7 +133,6 @@ Name: my_test
 Trials: 5
 Start: 2023-01-01
 End: 2023-12-31
-Warmup Days: 14
 Trading Days: 14
 ```
 

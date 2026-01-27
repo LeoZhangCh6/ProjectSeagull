@@ -1,4 +1,5 @@
 import os
+import time
 from typing import Optional
 
 import pandas as pd
@@ -14,6 +15,23 @@ def _get_nasdaq_api_key(explicit: Optional[str] = None) -> Optional[str]:
         or os.environ.get("QUANDL_API_KEY")
         or None
     )
+
+
+def _request_with_retry(url: str, params: dict, max_retries: int = 3, base_timeout: int = 60) -> requests.Response:
+    """Make a GET request with exponential backoff retry on timeout/connection errors."""
+    last_exc = None
+    for attempt in range(max_retries):
+        try:
+            timeout = base_timeout * (attempt + 1)  # Increase timeout on retries
+            resp = requests.get(url, params=params, timeout=timeout)
+            return resp
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            last_exc = e
+            if attempt < max_retries - 1:
+                wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                print(f"[sharadar_client] Request timeout, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})...")
+                time.sleep(wait_time)
+    raise last_exc
 
 
 def get_sf1_series(
@@ -41,7 +59,7 @@ def get_sf1_series(
         "api_key": api_key,
     }
     params = {k: v for k, v in params_raw.items() if v is not None}
-    resp = requests.get(base, params=params, timeout=30)
+    resp = _request_with_retry(base, params)
     # Handle common HTTP error cases gracefully so callers can skip unavailable signals
     if resp.status_code == 429:
         raise RuntimeError("Rate limited by Nasdaq Data Link. Please slow down or try again later.")

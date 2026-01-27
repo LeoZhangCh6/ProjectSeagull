@@ -169,7 +169,7 @@ This adds the agent to the `agents_registry` table.
 
 ```bash
 set BACKTEST_TEST_NAMES=hybrid_test
-python Backtesting/run_suite.py
+python Scripts/run_backtest.py
 ```
 
 ### 4. Visualize Results
@@ -405,7 +405,7 @@ python Scripts/general_config_gui.py
 
 # 3. Run backtest
 set BACKTEST_TEST_NAMES=hybrid_test
-python Backtesting/run_suite.py
+python Scripts/run_backtest.py
 
 # 4. Visualize
 python Scripts/visualize_agent.py logs/hybrid_agent_decisions.json

@@ -35,7 +35,6 @@ class TestDefinition:
     seed: Optional[int] = None
     record_curves: bool = False
     plot_dir: Optional[str] = None
-    warmup_days: int = 14
     trading_days: int = 14
 
 
@@ -48,7 +47,7 @@ def load_test_definitions_csv(path: str) -> List[TestDefinition]:
     """
     CSV columns:
       required: name,trials,overall_start_date,overall_end_date
-      optional: seed,record_curves,plot_dir,warmup_days,trading_days
+      optional: seed,record_curves,plot_dir,trading_days
     """
     if not os.path.exists(path):
         raise FileNotFoundError(f"Test definitions CSV not found: {path}")
@@ -75,7 +74,6 @@ def load_test_definitions_csv(path: str) -> List[TestDefinition]:
                     seed=(int(row["seed"]) if (row.get("seed") or "").strip() != "" else None),
                     record_curves=_parse_bool(row.get("record_curves", "")),
                     plot_dir=((row.get("plot_dir") or "").strip() or None),
-                    warmup_days=int((row.get("warmup_days") or "14").strip() or 14),
                     trading_days=int((row.get("trading_days") or "14").strip() or 14),
                 )
             )
@@ -91,7 +89,6 @@ def _pick_symbol_windows_within_range(
     num_symbols: int,
     windows_per_symbol: int,
     by_symbol: Dict[str, List[ScopeWindow]],
-    warmup_days: int,
     trading_days: int,
 ) -> List[ScopeWindow]:
     symbols = list(by_symbol.keys())
@@ -101,10 +98,10 @@ def _pick_symbol_windows_within_range(
 
     start_dt = pd.to_datetime(overall_start_date)
     end_dt = pd.to_datetime(overall_end_date)
-    total_days = int(warmup_days) + int(trading_days)
+    total_days = int(trading_days)
     max_start = end_dt - pd.Timedelta(days=total_days)
     if max_start < start_dt:
-        raise ValueError("Overall date range too short for warmup_days + trading_days.")
+        raise ValueError("Overall date range too short for trading_days.")
 
     picks: List[ScopeWindow] = []
     for s in chosen_syms:
@@ -288,7 +285,7 @@ def load_test_definitions_db(names: Optional[List[str]] = None) -> List[TestDefi
                     """
                     SELECT name, trials,
                            overall_start_date, overall_end_date, seed,
-                           record_curves, plot_dir, warmup_days, trading_days
+                           record_curves, plot_dir, trading_days
                     FROM test_definitions
                     WHERE name = ANY(%s)
                     ORDER BY name
@@ -300,7 +297,7 @@ def load_test_definitions_db(names: Optional[List[str]] = None) -> List[TestDefi
                     """
                     SELECT name, trials,
                            overall_start_date, overall_end_date, seed,
-                           record_curves, plot_dir, warmup_days, trading_days
+                           record_curves, plot_dir, trading_days
                     FROM test_definitions
                     ORDER BY name
                     """
@@ -308,7 +305,7 @@ def load_test_definitions_db(names: Optional[List[str]] = None) -> List[TestDefi
             for r in cur.fetchall():
                 (name, trials,
                  overall_start_date, overall_end_date, seed,
-                 record_curves, plot_dir, warmup_days, trading_days) = r
+                 record_curves, plot_dir, trading_days) = r
                 rows.append(
                     TestDefinition(
                         name=str(name),
@@ -318,7 +315,6 @@ def load_test_definitions_db(names: Optional[List[str]] = None) -> List[TestDefi
                         seed=(int(seed) if seed is not None else None),
                         record_curves=bool(record_curves),
                         plot_dir=(str(plot_dir) if plot_dir else None),
-                        warmup_days=int(warmup_days),
                         trading_days=int(trading_days),
                     )
                 )
@@ -376,17 +372,16 @@ class BacktestSuite:
         windows_per_symbol: int,
         overall_start_date: str,
         overall_end_date: str,
-        warmup_days: int,
         trading_days: int,
         timespan: str,
         multiplier: int,
     ) -> List[ScopeWindow]:
         start_dt = pd.to_datetime(overall_start_date)
         end_dt = pd.to_datetime(overall_end_date)
-        total_days = int(warmup_days) + int(trading_days)
+        total_days = int(trading_days)
         max_start = end_dt - pd.Timedelta(days=total_days)
         if max_start < start_dt:
-            raise ValueError("Overall date range too short for warmup_days + trading_days.")
+            raise ValueError("Overall date range too short for trading_days.")
         picks: List[ScopeWindow] = []
         for _ in range(max(1, int(windows_per_symbol))):
             span_days = (max_start - start_dt).days
@@ -414,7 +409,6 @@ class BacktestSuite:
         overall_end_date: str,
         record_equity_curves: bool = False,
         plot_dir: Optional[str] = None,
-        warmup_days: int = 14,
         trading_days: int = 14,
     ) -> Tuple[pd.DataFrame, Optional[Dict[str, pd.DataFrame]]]:
         scenarios = self.sample_single_symbol_windows(
@@ -422,7 +416,6 @@ class BacktestSuite:
             windows_per_symbol=windows_per_symbol,
             overall_start_date=overall_start_date,
             overall_end_date=overall_end_date,
-            warmup_days=warmup_days,
             trading_days=trading_days,
             timespan=timespan,
             multiplier=multiplier,
@@ -441,7 +434,7 @@ class BacktestSuite:
                 initial_cash=self.initial_cash,
                 commission_rate=self.commission_rate,
             )
-            curve = env.run(agent, warmup_days=warmup_days, trading_days=trading_days)
+            curve = env.run(agent, trading_days=trading_days)
             metrics = _compute_metrics(curve, aw.timespan, aw.multiplier, self.initial_cash)
             row = {
                 "run_id": idx,
@@ -463,22 +456,20 @@ class BacktestSuite:
                     fname = f"trial_{idx}_{aw.symbol}_{aw.start_date}_{aw.end_date}_{aw.timespan}{aw.multiplier}.png"
                     safe_name = fname.replace(":", "-").replace("/", "-").replace("\\", "-")
                     out_path = os.path.join(plot_dir, safe_name)
-                    # Title based on actual plotted window (warmup + trading)
                     plot_start_dt = str(env.data.loc[0, "time"]) if not env.data.empty else aw.start_date
                     if getattr(env, "trading_end_timestamp", None) is not None:
                         plot_end_dt = pd.to_datetime(env.trading_end_timestamp, unit="ms").strftime("%Y-%m-%d %H:%M")
                     else:
                         plot_end_dt = aw.end_date
-                    title = f"{aw.symbol} {plot_start_dt} to {plot_end_dt} (warmup {warmup_days}d, trade {trading_days}d) ({aw.timespan} x{aw.multiplier})"
+                    title = f"{aw.symbol} {plot_start_dt} to {plot_end_dt} ({trading_days}d) ({aw.timespan} x{aw.multiplier})"
                     plot_candles_with_trades(
                         env.data,
                         env.broker.trades,
                         title=title,
                         save_path=out_path,
                         show=False,
-                        trading_start_timestamp=env.trading_start_timestamp,
-                        trading_end_timestamp=env.trading_end_timestamp,
                         equity_curve=curve,
+                        agent_states=env.agent_states,
                     )
                 except Exception as _:
                     # Do not fail the suite on plotting errors
@@ -496,7 +487,6 @@ class BacktestSuite:
         overall_end_date: str,
         record_equity_curves: bool = False,
         plot_dir: Optional[str] = None,
-        warmup_days: int = 14,
         trading_days: int = 14,
     ) -> Tuple[pd.DataFrame, Optional[Dict[str, pd.DataFrame]]]:
         scenarios = self.sample_single_symbol_windows(
@@ -504,7 +494,6 @@ class BacktestSuite:
             windows_per_symbol=windows_per_symbol,
             overall_start_date=overall_start_date,
             overall_end_date=overall_end_date,
-            warmup_days=warmup_days,
             trading_days=trading_days,
             timespan=timespan,
             multiplier=multiplier,
@@ -523,7 +512,7 @@ class BacktestSuite:
                 initial_cash=self.initial_cash,
                 commission_rate=self.commission_rate,
             )
-            curve = env.run(agent, warmup_days=warmup_days, trading_days=trading_days)
+            curve = env.run(agent, trading_days=trading_days)
             metrics = _compute_metrics(curve, aw.timespan, aw.multiplier, self.initial_cash)
             row = {
                 "run_id": idx,
@@ -545,22 +534,20 @@ class BacktestSuite:
                     fname = f"trial_{idx}_{aw.symbol}_{aw.start_date}_{aw.end_date}_{aw.timespan}{aw.multiplier}.png"
                     safe_name = fname.replace(":", "-").replace("/", "-").replace("\\", "-")
                     out_path = os.path.join(plot_dir, safe_name)
-                    # Title based on actual plotted window (warmup + trading)
                     plot_start_dt = str(env.data.loc[0, "time"]) if not env.data.empty else aw.start_date
                     if getattr(env, "trading_end_timestamp", None) is not None:
                         plot_end_dt = pd.to_datetime(env.trading_end_timestamp, unit="ms").strftime("%Y-%m-%d %H:%M")
                     else:
                         plot_end_dt = aw.end_date
-                    title = f"{aw.symbol} {plot_start_dt} to {plot_end_dt} (warmup {warmup_days}d, trade {trading_days}d) ({aw.timespan} x{aw.multiplier})"
+                    title = f"{aw.symbol} {plot_start_dt} to {plot_end_dt} ({trading_days}d) ({aw.timespan} x{aw.multiplier})"
                     plot_candles_with_trades(
                         env.data,
                         env.broker.trades,
                         title=title,
                         save_path=out_path,
                         show=False,
-                        trading_start_timestamp=env.trading_start_timestamp,
-                        trading_end_timestamp=env.trading_end_timestamp,
                         equity_curve=curve,
+                        agent_states=env.agent_states,
                     )
                 except Exception as _:
                     # Do not fail the suite on plotting errors
@@ -575,7 +562,6 @@ class BacktestSuite:
         windows_per_symbol: int,
         record_equity_curves: bool = False,
         plot_dir: Optional[str] = None,
-        warmup_days: int = 14,
         trading_days: int = 14,
     ) -> Tuple[pd.DataFrame, Optional[Dict[str, pd.DataFrame]]]:
         all_rows: List[pd.DataFrame] = []
@@ -586,7 +572,6 @@ class BacktestSuite:
                 windows_per_symbol,
                 record_equity_curves=record_equity_curves,
                 plot_dir=plot_dir,
-                warmup_days=warmup_days,
                 trading_days=trading_days,
             )
             df = df.assign(trial=t)
@@ -607,7 +592,6 @@ class BacktestSuite:
         overall_end_date: str,
         record_equity_curves: bool = False,
         plot_dir: Optional[str] = None,
-        warmup_days: int = 14,
         trading_days: int = 14,
     ) -> Tuple[pd.DataFrame, Optional[Dict[str, pd.DataFrame]]]:
         all_rows: List[pd.DataFrame] = []
@@ -622,7 +606,6 @@ class BacktestSuite:
                 overall_end_date=overall_end_date,
                 record_equity_curves=record_equity_curves,
                 plot_dir=plot_dir,
-                warmup_days=warmup_days,
                 trading_days=trading_days,
             )
             df = df.assign(trial=t)

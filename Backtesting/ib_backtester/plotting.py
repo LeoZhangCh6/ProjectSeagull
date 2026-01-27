@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from typing import List, Optional, Dict
+from typing import Any, List, Optional, Dict
 
 import pandas as pd
 
-from .engine import FillReport
+from .engine import AgentState, FillReport
 
 
 def plot_candles_with_trades(
@@ -13,13 +13,20 @@ def plot_candles_with_trades(
     title: Optional[str] = None,
     save_path: Optional[str] = None,
     show: bool = True,
-    trading_start_timestamp: Optional[int] = None,
-    trading_end_timestamp: Optional[int] = None,
     equity_curve: Optional[pd.DataFrame] = None,
+    agent_states: Optional[List[AgentState]] = None,
 ) -> None:
     """
     Plot candlesticks with volume and overlay buy/sell markers at trade timestamps.
-    Shade pre-trading warmup region. Add a bottom panel for cumulative return.
+    Shows agent behaviors and portfolio states in additional panels.
+
+    Panels:
+    - Panel 0: Candlestick chart with trade markers
+    - Panel 1: Volume
+    - Panel 2: Cumulative return
+    - Panel 3: Holding % (stock value / equity)
+    - Panel 4: Position (shares held)
+    - Panel 5+: Agent custom state variables (if provided)
 
     Requires mplfinance and matplotlib.
     """
@@ -62,9 +69,6 @@ def plot_candles_with_trades(
     # Base data indexed by datetime for resampling (keep original columns)
     base = data.copy()
     base = base.set_index(pd.DatetimeIndex(base["time"])).sort_index()
-    if trading_end_timestamp is not None:
-        end_dt = pd.to_datetime(trading_end_timestamp, unit="ms")
-        base = base.loc[:end_dt]
 
     # Resample to hourly candlesticks and volume for visualization
     df = pd.DataFrame({
@@ -74,8 +78,6 @@ def plot_candles_with_trades(
         "Close": base["close"].resample("1h").last(),
         "Volume": base["volume"].resample("1h").sum(),
     }).dropna(how="all")
-
-    # No VWAP overlay (removed by user request)
 
     # Build trade positions and labels (used for shading and optional annotation)
     idx = df.index
@@ -98,37 +100,60 @@ def plot_candles_with_trades(
             qty_label[pos] = f"-{tr.quantity}"
 
     apds = []
-    # No VWAP overlay
+    next_panel = 2  # Panels: 0=candles, 1=volume, 2+=custom
 
-    # Build returns panel: compute cumulative returns starting at trading start equity
-    returns_series = None
+    # Build returns panel: compute cumulative returns from start
     if equity_curve is not None and not equity_curve.empty:
         eq = equity_curve.copy()
         eq.index = pd.DatetimeIndex(pd.to_datetime(eq["time"]))
         # Align to candle index
         eq = eq.reindex(idx, method="pad")
-        if trading_start_timestamp is not None:
-            t0 = pd.to_datetime(trading_start_timestamp, unit="ms")
-            if t0 in eq.index:
-                start_equity = float(eq.loc[t0, "equity"])
-            else:
-                # nearest at/after
-                start_equity = float(eq.loc[eq.index[0], "equity"])
-        else:
-            start_equity = float(eq["equity"].iloc[0])
+        start_equity = float(eq["equity"].iloc[0])
         returns_series = (eq["equity"] / start_equity) - 1.0
-        apds.append(mpf.make_addplot(returns_series.values, panel=2, color="#00E5FF", ylabel="Return"))
+        apds.append(mpf.make_addplot(returns_series.values, panel=next_panel, color="#00E5FF", ylabel="Return"))
+        next_panel += 1
 
         # Build holding percent panel (stock value / total equity * 100)
-        # Avoid division by zero by masking zeros
         equity_vals = eq["equity"].replace(0, pd.NA).astype(float)
         hold_value = (eq["position"].astype(float) * eq["close"].astype(float))
         hold_pct = (hold_value / equity_vals) * 100.0
-        apds.append(mpf.make_addplot(hold_pct.values, panel=3, color="#A78BFA", ylabel="Holding %"))
+        apds.append(mpf.make_addplot(hold_pct.values, panel=next_panel, color="#A78BFA", ylabel="Holding %"))
+        next_panel += 1
 
         # Build position (shares) panel
         position_series = eq["position"].astype(float)
-        apds.append(mpf.make_addplot(position_series.values, panel=4, color="#FFB86C", ylabel="Shares"))
+        apds.append(mpf.make_addplot(position_series.values, panel=next_panel, color="#FFB86C", ylabel="Shares"))
+        next_panel += 1
+
+    # Add agent state panels if provided
+    if agent_states:
+        # Build DataFrame from agent states
+        state_records = []
+        for s in agent_states:
+            rec = {"timestamp": s.timestamp, "time": s.time}
+            rec.update(s.custom)
+            state_records.append(rec)
+        
+        if state_records:
+            state_df = pd.DataFrame(state_records)
+            state_df.index = pd.DatetimeIndex(pd.to_datetime(state_df["time"]))
+            state_df = state_df.reindex(idx, method="pad")
+            
+            # Plot each numeric custom state variable
+            state_colors = ["#FF6B9D", "#4ADE80", "#FBBF24", "#60A5FA", "#C084FC", "#F472B6"]
+            color_idx = 0
+            for col in state_df.columns:
+                if col in ("timestamp", "time"):
+                    continue
+                try:
+                    vals = pd.to_numeric(state_df[col], errors="coerce")
+                    if vals.notna().any():
+                        color = state_colors[color_idx % len(state_colors)]
+                        apds.append(mpf.make_addplot(vals.values, panel=next_panel, color=color, ylabel=col))
+                        next_panel += 1
+                        color_idx += 1
+                except Exception:
+                    pass
 
     # Volume on its own panel (panel=1) – hourly
     if "Volume" in df.columns and len(df) > 0:
@@ -147,12 +172,6 @@ def plot_candles_with_trades(
     }
 
     fig, axes = mpf.plot(df, returnfig=True, **kwargs)
-
-    # Shade warmup region
-    if trading_start_timestamp is not None:
-        start_dt = idx[0]
-        trading_start_dt = pd.to_datetime(trading_start_timestamp, unit="ms")
-        axes[0].axvspan(start_dt, trading_start_dt, facecolor="#101826", alpha=0.35, zorder=0)
 
     # Shade buy/sell regions (one bar wide centered on timestamp)
     def span_bounds(i: int):
