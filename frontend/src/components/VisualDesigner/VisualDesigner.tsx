@@ -21,14 +21,98 @@ import {
   EdgeChange,
   ReactFlowProvider,
   useReactFlow,
+  EdgeProps,
+  getBezierPath,
+  BaseEdge,
+  EdgeLabelRenderer,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
-import { X, Save, Play, Code, FolderOpen, Plus, Trash2, Upload, Download } from 'lucide-react';
+import { X, Save, Play, Code, FolderOpen, Plus, Trash2, Upload, Download, XCircle } from 'lucide-react';
 import { nodeTypes } from './CustomNodes';
 import { getNodeTypesByCategory, NODE_TYPES, CATEGORY_COLORS } from './nodeTypes';
 import { visualDesignerApi, signalsApi } from '../../api/client';
 import type { Signal, VisualDesign, VisualDesignGraph, CodeGenerationResult, ValidationResult } from '../../types';
+
+// Custom edge with delete button on hover
+function DeletableEdge({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+  style = {},
+  markerEnd,
+  selected,
+}: EdgeProps) {
+  const [isHovered, setIsHovered] = useState(false);
+  const [edgePath, labelX, labelY] = getBezierPath({
+    sourceX,
+    sourceY,
+    sourcePosition,
+    targetX,
+    targetY,
+    targetPosition,
+  });
+
+  return (
+    <>
+      {/* Invisible wider path for easier hovering */}
+      <path
+        d={edgePath}
+        fill="none"
+        strokeWidth={20}
+        stroke="transparent"
+        onMouseEnter={() => setIsHovered(true)}
+        onMouseLeave={() => setIsHovered(false)}
+        style={{ cursor: 'pointer' }}
+      />
+      <BaseEdge 
+        path={edgePath} 
+        markerEnd={markerEnd} 
+        style={{
+          ...style,
+          stroke: selected ? '#fff' : isHovered ? '#ef4444' : '#64748b',
+          strokeWidth: selected || isHovered ? 3 : 2,
+        }}
+      />
+      {/* Delete button shown on hover or selection */}
+      {(isHovered || selected) && (
+        <EdgeLabelRenderer>
+          <div
+            style={{
+              position: 'absolute',
+              transform: `translate(-50%, -50%) translate(${labelX}px,${labelY}px)`,
+              pointerEvents: 'all',
+            }}
+            className="nodrag nopan"
+            onMouseEnter={() => setIsHovered(true)}
+            onMouseLeave={() => setIsHovered(false)}
+          >
+            <button
+              className="w-5 h-5 bg-red-500 hover:bg-red-400 rounded-full flex items-center justify-center shadow-lg"
+              onClick={(e) => {
+                e.stopPropagation();
+                // Dispatch custom event to delete edge
+                window.dispatchEvent(new CustomEvent('delete-edge', { detail: { id } }));
+              }}
+              title="Delete connection"
+            >
+              <X className="w-3 h-3 text-white" />
+            </button>
+          </div>
+        </EdgeLabelRenderer>
+      )}
+    </>
+  );
+}
+
+// Edge types for ReactFlow
+const edgeTypes = {
+  deletable: DeletableEdge,
+};
 
 interface VisualDesignerProps {
   isOpen: boolean;
@@ -125,21 +209,44 @@ function PropertiesPanel({
           />
         </div>
         
-        {/* Signal-specific: signal selector */}
+        {/* Signal-specific: signal selector and frequency */}
         {nodeType === 'signal' && (
-          <div>
-            <label className="block text-xs text-[var(--text-secondary)] mb-1">Signal</label>
-            <select
-              value={data.signalId || ''}
-              onChange={(e) => handleChange('signalId', e.target.value)}
-              className="w-full text-sm"
-            >
-              <option value="">Select signal...</option>
-              {signals.map(s => (
-                <option key={s.id} value={s.id}>{s.id}</option>
-              ))}
-            </select>
-          </div>
+          <>
+            <div>
+              <label className="block text-xs text-[var(--text-secondary)] mb-1">Signal</label>
+              <select
+                value={data.signalId || ''}
+                onChange={(e) => {
+                  const signal = signals.find(s => s.id === e.target.value);
+                  handleChange('signalId', e.target.value);
+                  if (signal?.model_freq) {
+                    handleChange('frequency', signal.model_freq);
+                  }
+                }}
+                className="w-full text-sm"
+              >
+                <option value="">Select signal...</option>
+                {signals.map(s => (
+                  <option key={s.id} value={s.id}>{s.id} ({s.model_freq || 'unknown'})</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-[var(--text-secondary)] mb-1">Frequency</label>
+              <select
+                value={data.frequency || '1D'}
+                onChange={(e) => handleChange('frequency', e.target.value)}
+                className="w-full text-sm"
+              >
+                <option value="1T">1 Minute</option>
+                <option value="5T">5 Minutes</option>
+                <option value="15T">15 Minutes</option>
+                <option value="1H">1 Hour</option>
+                <option value="1D">1 Day</option>
+                <option value="1W">1 Week</option>
+              </select>
+            </div>
+          </>
         )}
         
         {/* Constant-specific */}
@@ -347,6 +454,7 @@ function DesignerCanvas({
   const [nodes, setNodes] = useState<Node[]>(initialDesign?.graph_json?.nodes || []);
   const [edges, setEdges] = useState<Edge[]>(initialDesign?.graph_json?.edges || []);
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
+  const [selectedEdges, setSelectedEdges] = useState<string[]>([]);
   const [signals, setSignals] = useState<Signal[]>([]);
   const [designName, setDesignName] = useState(initialDesign?.name || 'Untitled Design');
   const [symbol, setSymbol] = useState(initialDesign?.symbol || 'AAPL');
@@ -364,8 +472,23 @@ function DesignerCanvas({
   // Load signals on mount
   useEffect(() => {
     signalsApi.list()
-      .then(setSignals)
-      .catch(console.error);
+      .then(data => {
+        console.log('[VisualDesigner] Loaded signals:', data);
+        setSignals(data);
+      })
+      .catch(err => {
+        console.error('[VisualDesigner] Failed to load signals:', err);
+      });
+  }, []);
+  
+  // Handle edge deletion from custom event
+  useEffect(() => {
+    const handleDeleteEdge = (e: CustomEvent<{ id: string }>) => {
+      setEdges((eds) => eds.filter((edge) => edge.id !== e.detail.id));
+    };
+    
+    window.addEventListener('delete-edge', handleDeleteEdge as EventListener);
+    return () => window.removeEventListener('delete-edge', handleDeleteEdge as EventListener);
   }, []);
   
   // Node/edge change handlers
@@ -378,15 +501,38 @@ function DesignerCanvas({
   }, []);
   
   const onConnect = useCallback((connection: Connection) => {
-    setEdges((eds) => addEdge(connection, eds));
+    // Add edge with custom type for delete button
+    setEdges((eds) => addEdge({ ...connection, type: 'deletable' }, eds));
   }, []);
+  
+  
+  // Delete selected edges
+  const handleDeleteSelectedEdges = useCallback(() => {
+    if (selectedEdges.length > 0) {
+      setEdges((eds) => eds.filter((e) => !selectedEdges.includes(e.id)));
+      setSelectedEdges([]);
+    }
+  }, [selectedEdges]);
   
   // Node selection
   const onNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
     setSelectedNode(node);
+    setSelectedEdges([]); // Deselect edges when clicking a node
   }, []);
   
   const onPaneClick = useCallback(() => {
+    setSelectedNode(null);
+    setSelectedEdges([]); // Deselect edges when clicking empty space
+  }, []);
+  
+  // Edge click - toggle selection
+  const onEdgeClickToggle = useCallback((_: React.MouseEvent, edge: Edge) => {
+    setSelectedEdges((prev) => {
+      if (prev.includes(edge.id)) {
+        return []; // Deselect if already selected
+      }
+      return [edge.id]; // Select this edge
+    });
     setSelectedNode(null);
   }, []);
   
@@ -510,15 +656,19 @@ function DesignerCanvas({
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (selectedNode && document.activeElement?.tagName !== 'INPUT') {
-          handleDeleteSelected();
+        if (document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'SELECT') {
+          if (selectedNode) {
+            handleDeleteSelected();
+          } else if (selectedEdges.length > 0) {
+            handleDeleteSelectedEdges();
+          }
         }
       }
     };
     
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedNode, handleDeleteSelected]);
+  }, [selectedNode, selectedEdges, handleDeleteSelected, handleDeleteSelectedEdges]);
   
   return (
     <div className="flex flex-col h-full">
@@ -600,18 +750,21 @@ function DesignerCanvas({
         <div className="flex-1" ref={reactFlowWrapper}>
           <ReactFlow
             nodes={nodes}
-            edges={edges}
+            edges={edges.map(e => ({ ...e, type: e.type || 'deletable', selected: selectedEdges.includes(e.id) }))}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
             onNodeClick={onNodeClick}
+            onEdgeClick={onEdgeClickToggle}
             onPaneClick={onPaneClick}
             nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
             fitView
             snapToGrid
             snapGrid={[15, 15]}
+            deleteKeyCode={['Delete', 'Backspace']}
             defaultEdgeOptions={{
-              type: 'smoothstep',
+              type: 'deletable',
               style: { stroke: '#64748b', strokeWidth: 2 },
             }}
           >

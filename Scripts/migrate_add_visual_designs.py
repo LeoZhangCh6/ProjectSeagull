@@ -5,7 +5,13 @@ import sys
 import os
 
 # Add project root to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
+
+# Load .env file from backend folder
+from dotenv import load_dotenv
+env_path = os.path.join(project_root, "backend", ".env")
+load_dotenv(env_path)
 
 from Common.db import get_pg_conn
 
