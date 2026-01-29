@@ -1,7 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Trash2, Plus, RefreshCw } from 'lucide-react';
+import { Trash2, Plus, RefreshCw, Edit2, Check, X } from 'lucide-react';
 import { testsApi } from '../../api/client';
 import type { TestDefinition } from '../../types';
+
+type EditingCell = {
+  testName: string;
+  field: keyof TestDefinition;
+} | null;
 
 export function TestsTab() {
   const [tests, setTests] = useState<TestDefinition[]>([]);
@@ -18,6 +23,10 @@ export function TestsTab() {
     record_curves: false,
     plot_dir: '',
   });
+  
+  // Inline editing state
+  const [editingCell, setEditingCell] = useState<EditingCell>(null);
+  const [editValue, setEditValue] = useState<string>('');
   
   const loadTests = useCallback(async () => {
     setLoading(true);
@@ -83,6 +92,120 @@ export function TestsTab() {
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to delete test');
     }
+  };
+  
+  const handleStartEdit = (testName: string, field: keyof TestDefinition, currentValue: string | number | boolean | undefined) => {
+    setEditingCell({ testName, field });
+    setEditValue(currentValue?.toString() ?? '');
+  };
+  
+  const handleCancelEdit = () => {
+    setEditingCell(null);
+    setEditValue('');
+  };
+  
+  const handleConfirmEdit = async () => {
+    if (!editingCell) return;
+    
+    const { testName, field } = editingCell;
+    
+    // Parse value based on field type
+    let parsedValue: string | number | boolean | undefined;
+    switch (field) {
+      case 'trials':
+      case 'trading_days':
+        parsedValue = parseInt(editValue) || 1;
+        break;
+      case 'seed':
+        parsedValue = editValue ? parseInt(editValue) : undefined;
+        break;
+      case 'record_curves':
+        parsedValue = editValue === 'true';
+        break;
+      default:
+        parsedValue = editValue;
+    }
+    
+    // Validate if it's a name field
+    if (field === 'name' && (!editValue || !editValue.trim())) {
+      setError('Name cannot be empty');
+      return;
+    }
+    
+    // Validate date fields
+    if (field === 'overall_start_date' || field === 'overall_end_date') {
+      const test = tests.find(t => t.name === testName);
+      if (test) {
+        const startDate = new Date(field === 'overall_start_date' ? editValue : test.overall_start_date);
+        const endDate = new Date(field === 'overall_end_date' ? editValue : test.overall_end_date);
+        
+        if (startDate >= endDate) {
+          setError('Start date must be before end date');
+          return;
+        }
+      }
+    }
+    
+    try {
+      await testsApi.update(testName, { [field]: parsedValue });
+      setEditingCell(null);
+      setEditValue('');
+      setError(null);
+      await loadTests();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to update test');
+    }
+  };
+  
+  const renderEditableCell = (
+    test: TestDefinition,
+    field: keyof TestDefinition,
+    displayValue: string | number | boolean | undefined,
+    inputType: 'text' | 'number' | 'date' = 'text'
+  ) => {
+    const isEditing = editingCell?.testName === test.name && editingCell?.field === field;
+    
+    if (isEditing) {
+      return (
+        <div className="flex items-center gap-1">
+          <input
+            type={inputType}
+            value={editValue}
+            onChange={(e) => setEditValue(e.target.value)}
+            className="w-full text-sm px-2 py-1"
+            autoFocus
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleConfirmEdit();
+              if (e.key === 'Escape') handleCancelEdit();
+            }}
+          />
+          <button
+            onClick={handleConfirmEdit}
+            className="text-green-400 hover:text-green-300 p-1"
+            title="Confirm"
+          >
+            <Check className="w-3 h-3" />
+          </button>
+          <button
+            onClick={handleCancelEdit}
+            className="text-gray-400 hover:text-gray-300 p-1"
+            title="Cancel"
+          >
+            <X className="w-3 h-3" />
+          </button>
+        </div>
+      );
+    }
+    
+    return (
+      <div 
+        className="group flex items-center gap-1 cursor-pointer hover:bg-[var(--bg-tertiary)] rounded px-1 -mx-1"
+        onClick={() => handleStartEdit(test.name, field, displayValue)}
+      >
+        <span>{displayValue?.toString() ?? '-'}</span>
+        <Edit2 className="w-3 h-3 text-gray-500 opacity-0 group-hover:opacity-100" />
+      </div>
+    );
   };
   
   return (
@@ -210,17 +333,51 @@ export function TestsTab() {
                   <th>Start Date</th>
                   <th>End Date</th>
                   <th>Trading Days</th>
+                  <th>Seed</th>
+                  <th>Record Curves</th>
+                  <th>Plot Dir</th>
                   <th className="w-20">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {tests.map((test) => (
                   <tr key={test.name}>
-                    <td className="font-medium">{test.name}</td>
-                    <td>{test.trials}</td>
-                    <td>{test.overall_start_date}</td>
-                    <td>{test.overall_end_date}</td>
-                    <td>{test.trading_days}</td>
+                    <td className="font-medium">
+                      {renderEditableCell(test, 'name', test.name, 'text')}
+                    </td>
+                    <td>
+                      {renderEditableCell(test, 'trials', test.trials, 'number')}
+                    </td>
+                    <td>
+                      {renderEditableCell(test, 'overall_start_date', test.overall_start_date, 'date')}
+                    </td>
+                    <td>
+                      {renderEditableCell(test, 'overall_end_date', test.overall_end_date, 'date')}
+                    </td>
+                    <td>
+                      {renderEditableCell(test, 'trading_days', test.trading_days, 'number')}
+                    </td>
+                    <td>
+                      {renderEditableCell(test, 'seed', test.seed, 'number')}
+                    </td>
+                    <td>
+                      <button
+                        onClick={async () => {
+                          try {
+                            await testsApi.update(test.name, { record_curves: !test.record_curves });
+                            await loadTests();
+                          } catch (e) {
+                            setError(e instanceof Error ? e.message : 'Failed to update');
+                          }
+                        }}
+                        className={`px-2 py-1 rounded text-xs ${test.record_curves ? 'bg-green-600 text-white' : 'bg-gray-600 text-gray-300'}`}
+                      >
+                        {test.record_curves ? 'Yes' : 'No'}
+                      </button>
+                    </td>
+                    <td>
+                      {renderEditableCell(test, 'plot_dir', test.plot_dir, 'text')}
+                    </td>
                     <td>
                       <button
                         onClick={() => handleDelete(test.name)}

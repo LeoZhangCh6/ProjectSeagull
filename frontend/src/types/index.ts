@@ -113,3 +113,134 @@ export type WSMessage =
   | { type: 'progress'; job_id: string; job_index: number; message: string; percent: number }
   | { type: 'error'; message: string }
   | { type: 'pong' };
+
+// ============================================================================
+// Visual Agent Designer Types
+// ============================================================================
+
+export interface VisualDesignNode {
+  id: string;
+  type: string;
+  position: { x: number; y: number };
+  data: Record<string, any>;
+}
+
+export interface VisualDesignEdge {
+  id: string;
+  source: string;
+  target: string;
+  sourceHandle?: string;
+  targetHandle?: string;
+}
+
+export interface VisualDesignViewport {
+  x: number;
+  y: number;
+  zoom: number;
+}
+
+export interface VisualDesignGraph {
+  nodes: VisualDesignNode[];
+  edges: VisualDesignEdge[];
+  viewport: VisualDesignViewport;
+}
+
+export interface VisualDesign {
+  id: number;
+  name: string;
+  description?: string;
+  graph_json: VisualDesignGraph;
+  symbol: string;
+  primary_timespan: string;
+  primary_multiplier: number;
+  generated_code?: string;
+  agent_name?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface VisualDesignCreate {
+  name: string;
+  description?: string;
+  graph_json?: VisualDesignGraph;
+  symbol?: string;
+  primary_timespan?: string;
+  primary_multiplier?: number;
+}
+
+export interface CodeGenerationResult {
+  code: string;
+  errors: string[];
+  warnings: string[];
+}
+
+export interface ValidationError {
+  node_id: string | null;
+  message: string;
+}
+
+export interface ValidationResult {
+  valid: boolean;
+  errors: ValidationError[];
+  warnings: ValidationError[];
+  node_dimensions: Record<string, { inputs: Record<string, any>; output: any[] }>;
+}
+
+export interface SignalPreview {
+  signal_id: string;
+  values: number[];
+  timestamps: string[];
+  min_val: number;
+  max_val: number;
+}
+
+export interface DesignTemplate {
+  name: string;
+  title: string;
+  description: string;
+  symbol: string;
+  timespan: string;
+}
+
+// Node type definitions for the visual designer
+export type VisualNodeType = 
+  | 'signal'
+  | 'constant'
+  | 'variable'
+  | 'slice'
+  | 'concat'
+  | 'add'
+  | 'subtract'
+  | 'multiply'
+  | 'divide'
+  | 'matmul'
+  | 'mean'
+  | 'sum'
+  | 'std'
+  | 'min'
+  | 'max'
+  | 'normalize'
+  | 'clip'
+  | 'rolling_mean'
+  | 'rolling_std'
+  | 'rsi'
+  | 'macd'
+  | 'bollinger'
+  | 'linear'
+  | 'relu'
+  | 'tanh'
+  | 'sigmoid'
+  | 'softmax'
+  | 'lstm'
+  | 'conv1d'
+  | 'output';
+
+export interface NodeTypeDefinition {
+  type: VisualNodeType;
+  label: string;
+  category: 'data' | 'operation' | 'indicator' | 'ml' | 'output';
+  inputs: { name: string; type: string }[];
+  outputs: { name: string; type: string }[];
+  defaultData: Record<string, any>;
+  color: string;
+}

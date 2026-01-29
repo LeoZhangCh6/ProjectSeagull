@@ -1,10 +1,10 @@
 """Agents API router."""
 
 from typing import List
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 
 from Common.db import get_pg_conn
-from app.models.schemas import AgentCreate, AgentResponse, AgentClone
+from app.models.schemas import AgentCreate, AgentResponse, AgentClone, AgentRename
 
 router = APIRouter()
 
@@ -190,5 +190,118 @@ async def toggle_agent(agent_name: str):
         return {"name": agent_name, "enabled": result[0]}
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/{agent_name}/rename", response_model=AgentResponse)
+async def rename_agent(agent_name: str, rename_request: AgentRename):
+    """Rename an agent."""
+    try:
+        new_name = rename_request.new_name
+        
+        if not new_name or new_name.strip() == "":
+            raise HTTPException(status_code=400, detail="New name cannot be empty")
+        
+        new_name = new_name.strip()
+        
+        with get_pg_conn() as conn:
+            with conn.cursor() as cur:
+                # Check if agent exists
+                cur.execute(
+                    "SELECT name FROM agents_registry WHERE name = %s",
+                    (agent_name,)
+                )
+                if not cur.fetchone():
+                    raise HTTPException(status_code=404, detail=f"Agent '{agent_name}' not found")
+                
+                # Check if new name already exists
+                cur.execute(
+                    "SELECT name FROM agents_registry WHERE name = %s",
+                    (new_name,)
+                )
+                if cur.fetchone():
+                    raise HTTPException(status_code=400, detail=f"Agent '{new_name}' already exists")
+                
+                # Rename the agent
+                cur.execute(
+                    """
+                    UPDATE agents_registry
+                    SET name = %s, path = %s
+                    WHERE name = %s
+                    RETURNING name, path, code, description, enabled
+                    """,
+                    (new_name, f"db://agents/{new_name}", agent_name)
+                )
+                row = cur.fetchone()
+            conn.commit()
+        
+        return AgentResponse(
+            name=row[0],
+            path=row[1],
+            code=row[2],
+            description=row[3],
+            enabled=row[4]
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/upload", response_model=AgentResponse)
+async def upload_agent(
+    file: UploadFile = File(...),
+    agent_name: str = Form(None),
+    description: str = Form(None)
+):
+    """Upload a Python file to register as a new agent."""
+    try:
+        # Validate file is a Python file
+        if not file.filename.endswith('.py'):
+            raise HTTPException(status_code=400, detail="Only .py files are allowed")
+        
+        # Read file content
+        content = await file.read()
+        code = content.decode('utf-8')
+        
+        # Use provided name or derive from filename
+        name = agent_name if agent_name else file.filename.replace('.py', '')
+        name = name.strip()
+        
+        if not name:
+            raise HTTPException(status_code=400, detail="Agent name cannot be empty")
+        
+        # Set default description if not provided
+        agent_description = description if description else f"Uploaded from {file.filename}"
+        
+        path = f"db://agents/{name}"
+        
+        with get_pg_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO agents_registry (name, path, code, description, enabled)
+                    VALUES (%s, %s, %s, %s, TRUE)
+                    ON CONFLICT (name) DO UPDATE
+                    SET path = EXCLUDED.path,
+                        code = EXCLUDED.code,
+                        description = EXCLUDED.description
+                    """,
+                    (name, path, code, agent_description)
+                )
+            conn.commit()
+        
+        return AgentResponse(
+            name=name,
+            path=path,
+            code=code,
+            description=agent_description,
+            enabled=True
+        )
+    except HTTPException:
+        raise
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="File must be a valid UTF-8 encoded Python file")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

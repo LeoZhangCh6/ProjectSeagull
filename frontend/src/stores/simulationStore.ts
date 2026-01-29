@@ -64,12 +64,15 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
   initJob: (jobId, jobIndex, testName, agentName) => {
     set((state) => {
       const jobs = [...state.jobs];
+      // Initialize as 'pending' - will change to 'running' when first progress update arrives
       jobs[jobIndex] = {
         job_id: jobId,
         job_index: jobIndex,
         test_name: testName,
         agent_name: agentName,
-        status: 'running',
+        status: 'pending',
+        progress_message: 'Queued...',
+        progress_percent: 0,
         bars: [],
         trades: [],
         equity_curve: [],
@@ -143,6 +146,7 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
           if (jobs[message.job_index]) {
             jobs[message.job_index] = {
               ...jobs[message.job_index],
+              status: 'running',  // Mark as running once we get progress
               progress_message: message.message,
               progress_percent: message.percent,
             };

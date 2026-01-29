@@ -30,7 +30,7 @@ from Backtesting.ib_backtester.engine import IBBacktestEnv, BaseAgent
 from app.services.job_manager import simulation_sessions
 
 # Configuration for streaming
-STREAM_EVERY_N_BARS = 50  # Only send update every N bars (reduces WebSocket overhead)
+STREAM_EVERY_N_BARS = 5  # Only send update every N bars (reduces WebSocket overhead)
 
 
 async def safe_send_json(websocket: WebSocket, data: dict) -> bool:
@@ -401,7 +401,10 @@ async def run_simulation_async(
     job_ids: Optional[List[str]] = None,
     test_names: Optional[List[str]] = None,
 ):
-    """Run simulation asynchronously and stream results via WebSocket."""
+    """Run simulation asynchronously and stream results via WebSocket.
+    
+    Jobs run CONCURRENTLY using a thread pool, so users see progress for all jobs simultaneously.
+    """
     
     # Helper to check if still connected
     def is_connected():
@@ -424,103 +427,111 @@ async def run_simulation_async(
         })
         return
     
-    print(f"[Simulation] Starting {len(jobs)} jobs")
+    num_jobs = len(jobs)
+    print(f"[Simulation] Starting {num_jobs} jobs CONCURRENTLY")
     
     # Update session
     simulation_sessions[session_id] = {
         "status": "running",
-        "jobs_total": len(jobs),
+        "jobs_total": num_jobs,
         "jobs_completed": 0,
     }
     
     await safe_send_json(websocket, {
         "type": "status",
         "status": "started",
-        "jobs_total": len(jobs),
+        "jobs_total": num_jobs,
     })
     
-    # Run jobs sequentially with progress updates
+    # Determine number of workers (limit to avoid overwhelming the system)
+    max_workers = min(num_jobs, 8)  # Cap at 8 concurrent jobs
+    
     loop = asyncio.get_event_loop()
-    executor = ThreadPoolExecutor(max_workers=1)
+    executor = ThreadPoolExecutor(max_workers=max_workers)
     
     should_stop = False
+    jobs_completed = 0
     
+    # Shared queue for all updates from all jobs
+    update_queue = asyncio.Queue()
+    
+    # Send job_start for ALL jobs upfront so frontend can show all progress bars
     for job_index, (test_name, agent_name) in enumerate(jobs):
-        if should_stop or not is_connected():
-            break
-        
         job_id = f"{test_name}_{agent_name}"
-        
-        if not await safe_send_json(websocket, {
+        await safe_send_json(websocket, {
             "type": "job_start",
             "job_id": job_id,
             "job_index": job_index,
             "test_name": test_name,
             "agent_name": agent_name,
-        }):
-            should_stop = True
-            break
-        
-        # Queue for streaming bar data
-        bar_queue = asyncio.Queue()
-        progress_queue = asyncio.Queue()
-        
+        })
+    
+    # Create callbacks for each job that put updates into the shared queue
+    def make_callbacks(job_index: int, job_id: str, test_name: str, agent_name: str):
         def bar_callback(data):
             if not should_stop:
                 try:
-                    loop.call_soon_threadsafe(bar_queue.put_nowait, data)
+                    loop.call_soon_threadsafe(
+                        update_queue.put_nowait,
+                        ("bar", job_index, job_id, test_name, agent_name, data)
+                    )
                 except Exception:
                     pass
         
         def progress_callback(message: str, percent: int):
             if not should_stop:
                 try:
-                    loop.call_soon_threadsafe(progress_queue.put_nowait, (message, percent))
+                    loop.call_soon_threadsafe(
+                        update_queue.put_nowait,
+                        ("progress", job_index, job_id, test_name, agent_name, {"message": message, "percent": percent})
+                    )
                 except Exception:
                     pass
         
-        # Start streaming tasks
-        async def stream_bars():
-            nonlocal should_stop
-            while not should_stop and is_connected():
-                try:
-                    data = await asyncio.wait_for(bar_queue.get(), timeout=0.5)
-                    if data.get("bar") is not None:  # Skip final update with no bar
-                        if not await safe_send_json(websocket, {
-                            "type": "bar_update",
-                            "job_id": job_id,
-                            "job_index": job_index,
-                            "test_name": test_name,
-                            "agent_name": agent_name,
-                            **data
-                        }):
-                            should_stop = True
-                            break
-                except asyncio.TimeoutError:
-                    continue
-                except Exception:
-                    break
-        
-        async def stream_progress():
-            nonlocal should_stop
-            while not should_stop and is_connected():
-                try:
-                    message, percent = await asyncio.wait_for(progress_queue.get(), timeout=0.5)
+        return bar_callback, progress_callback
+    
+    # Task to stream all updates from all jobs
+    async def stream_all_updates():
+        nonlocal should_stop
+        while not should_stop and is_connected():
+            try:
+                update = await asyncio.wait_for(update_queue.get(), timeout=0.2)
+                update_type, job_index, job_id, test_name, agent_name, data = update
+                
+                if update_type == "bar" and data.get("bar") is not None:
+                    if not await safe_send_json(websocket, {
+                        "type": "bar_update",
+                        "job_id": job_id,
+                        "job_index": job_index,
+                        "test_name": test_name,
+                        "agent_name": agent_name,
+                        **data
+                    }):
+                        should_stop = True
+                        break
+                elif update_type == "progress":
                     await safe_send_json(websocket, {
                         "type": "progress",
                         "job_id": job_id,
                         "job_index": job_index,
-                        "message": message,
-                        "percent": percent,
+                        "message": data["message"],
+                        "percent": data["percent"],
                     })
-                except asyncio.TimeoutError:
-                    continue
-                except Exception:
-                    break
+            except asyncio.TimeoutError:
+                continue
+            except Exception as e:
+                print(f"[Stream] Error: {e}")
+                break
+    
+    # Start the streaming task
+    stream_task = asyncio.create_task(stream_all_updates())
+    
+    # Function to run a single job and handle completion
+    async def run_job_async(job_index: int, test_name: str, agent_name: str):
+        nonlocal jobs_completed
+        job_id = f"{test_name}_{agent_name}"
         
-        # Start tasks
-        stream_task = asyncio.create_task(stream_bars())
-        progress_task = asyncio.create_task(stream_progress())
+        bar_callback, progress_callback = make_callbacks(job_index, job_id, test_name, agent_name)
         
         try:
             result = await loop.run_in_executor(
@@ -531,18 +542,8 @@ async def run_simulation_async(
                 bar_callback,
                 progress_callback,
             )
-        finally:
-            # Cancel tasks
-            stream_task.cancel()
-            progress_task.cancel()
-            try:
-                await stream_task
-            except asyncio.CancelledError:
-                pass
-            try:
-                await progress_task
-            except asyncio.CancelledError:
-                pass
+        except Exception as e:
+            result = {"error": str(e)}
         
         # Send job completion
         if is_connected():
@@ -554,19 +555,51 @@ async def run_simulation_async(
                 "agent_name": agent_name,
                 "result": result
             })
+        
+        jobs_completed += 1
+        simulation_sessions[session_id]["jobs_completed"] = jobs_completed
+        
+        return result
+    
+    # Run ALL jobs concurrently
+    job_tasks = [
+        run_job_async(job_index, test_name, agent_name)
+        for job_index, (test_name, agent_name) in enumerate(jobs)
+    ]
+    
+    try:
+        # Wait for all jobs to complete
+        results = await asyncio.gather(*job_tasks, return_exceptions=True)
+        
+        # Log results
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                print(f"[Simulation] Job {i} failed with exception: {result}")
+            elif isinstance(result, dict) and result.get("error"):
+                print(f"[Simulation] Job {i} failed: {result['error']}")
+            else:
+                print(f"[Simulation] Job {i} completed successfully")
+    finally:
+        # Stop the streaming task
+        should_stop = True
+        stream_task.cancel()
+        try:
+            await stream_task
+        except asyncio.CancelledError:
+            pass
     
     # Update session
     simulation_sessions[session_id]["status"] = "completed"
-    simulation_sessions[session_id]["jobs_completed"] = len(jobs)
+    simulation_sessions[session_id]["jobs_completed"] = num_jobs
     
     # Send completion
     if is_connected():
         await safe_send_json(websocket, {
             "type": "status",
             "status": "completed",
-            "jobs_total": len(jobs),
-            "jobs_completed": len(jobs),
+            "jobs_total": num_jobs,
+            "jobs_completed": num_jobs,
         })
     
     executor.shutdown(wait=False)
-    print(f"[Simulation] Completed")
+    print(f"[Simulation] All {num_jobs} jobs completed")

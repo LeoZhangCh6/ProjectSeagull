@@ -46,6 +46,30 @@ CREATE TABLE IF NOT EXISTS test_jobs (
   PRIMARY KEY (test_name, agent_name)
 );
 
+-- Visual Agent Designs table for storing node-based agent diagrams
+CREATE TABLE IF NOT EXISTS visual_agent_designs (
+  id                  SERIAL PRIMARY KEY,
+  name                TEXT NOT NULL UNIQUE,
+  description         TEXT,
+  -- The ReactFlow graph data (nodes, edges, viewport)
+  graph_json          JSONB NOT NULL DEFAULT '{"nodes": [], "edges": [], "viewport": {"x": 0, "y": 0, "zoom": 1}}',
+  -- Agent configuration
+  symbol              TEXT NOT NULL DEFAULT 'AAPL',
+  primary_timespan    TEXT NOT NULL DEFAULT 'day',
+  primary_multiplier  INTEGER NOT NULL DEFAULT 1,
+  -- Generated Python code (cached)
+  generated_code      TEXT,
+  -- Link to registered agent (if deployed)
+  agent_name          TEXT REFERENCES agents_registry(name) ON DELETE SET NULL,
+  -- Timestamps
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Index for quick lookups
+CREATE INDEX IF NOT EXISTS idx_visual_agent_designs_name ON visual_agent_designs(name);
+CREATE INDEX IF NOT EXISTS idx_visual_agent_designs_agent ON visual_agent_designs(agent_name);
+
 -- Seed: available_signals (from data/available_signals.csv)
 
 INSERT INTO available_signals (id, source, spec, model_freq, description, enabled) VALUES

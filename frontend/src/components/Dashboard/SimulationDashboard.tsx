@@ -174,6 +174,32 @@ export function SimulationDashboard({ onBack }: SimulationDashboardProps) {
       <div className="flex-1 flex overflow-hidden">
         {/* Job List Sidebar */}
         <div className="w-64 border-r border-[var(--border-color)] overflow-y-auto bg-[var(--bg-secondary)]">
+          {/* Overall Progress Summary */}
+          {status === 'running' && jobs.length > 1 && (
+            <div className="p-4 border-b border-[var(--border-color)] bg-[var(--bg-tertiary)]">
+              <div className="text-sm font-medium mb-2">Overall Progress</div>
+              <div className="flex gap-2 text-xs mb-2">
+                <span className="text-yellow-400">
+                  {jobs.filter(j => j.status === 'pending').length} queued
+                </span>
+                <span className="text-blue-400">
+                  {jobs.filter(j => j.status === 'running').length} running
+                </span>
+                <span className="text-green-400">
+                  {jobs.filter(j => j.status === 'completed').length} done
+                </span>
+              </div>
+              <div className="w-full bg-gray-700 rounded-full h-2">
+                <div 
+                  className="bg-green-500 h-2 rounded-full transition-all duration-300" 
+                  style={{ 
+                    width: `${(jobs.filter(j => j.status === 'completed').length / jobs.length) * 100}%` 
+                  }}
+                />
+              </div>
+            </div>
+          )}
+          
           <JobList 
             jobs={jobs} 
             activeIndex={activeJobIndex} 

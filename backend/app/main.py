@@ -13,7 +13,7 @@ if _PROJECT_ROOT not in sys.path:
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import signals, tests, jobs, agents, simulation
+from app.routers import signals, tests, jobs, agents, simulation, visual_designer
 from app.websocket.handler import router as websocket_router
 
 app = FastAPI(
@@ -37,6 +37,7 @@ app.include_router(tests.router, prefix="/api/tests", tags=["tests"])
 app.include_router(jobs.router, prefix="/api/jobs", tags=["jobs"])
 app.include_router(agents.router, prefix="/api/agents", tags=["agents"])
 app.include_router(simulation.router, prefix="/api/simulation", tags=["simulation"])
+app.include_router(visual_designer.router, prefix="/api/visual-designer", tags=["visual-designer"])
 app.include_router(websocket_router)
 
 

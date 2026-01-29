@@ -36,14 +36,18 @@ export function JobList({ jobs, activeIndex, onSelect }: JobListProps) {
             </div>
           </div>
           
-          {/* Progress Bar */}
-          {job.status === 'running' && job.progress_percent !== undefined && (
+          {/* Progress Bar - show for both pending and running jobs */}
+          {(job.status === 'running' || job.status === 'pending') && (
             <div className="mt-2">
-              <div className="text-xs text-[var(--text-secondary)] mb-1">{job.progress_message}</div>
+              <div className="text-xs text-[var(--text-secondary)] mb-1">
+                {job.progress_message || (job.status === 'pending' ? 'Queued...' : 'Starting...')}
+              </div>
               <div className="w-full bg-gray-700 rounded-full h-1.5">
                 <div 
-                  className="bg-blue-500 h-1.5 rounded-full transition-all duration-300" 
-                  style={{ width: `${job.progress_percent}%` }}
+                  className={`h-1.5 rounded-full transition-all duration-300 ${
+                    job.status === 'pending' ? 'bg-yellow-500' : 'bg-blue-500'
+                  }`}
+                  style={{ width: `${job.progress_percent ?? 0}%` }}
                 />
               </div>
             </div>
@@ -81,6 +85,8 @@ export function JobList({ jobs, activeIndex, onSelect }: JobListProps) {
 
 function StatusIcon({ status }: { status: JobStatus['status'] }) {
   switch (status) {
+    case 'pending':
+      return <Clock className="w-5 h-5 text-yellow-400 animate-pulse" />;
     case 'running':
       return <Loader2 className="w-5 h-5 text-blue-400 animate-spin" />;
     case 'completed':
