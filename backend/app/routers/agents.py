@@ -11,15 +11,18 @@ router = APIRouter()
 
 @router.get("", response_model=List[AgentResponse])
 async def list_agents():
-    """List all agents."""
+    """List all agents with their linked visual design ID (if any)."""
     try:
         with get_pg_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT name, path, code, description, enabled
-                    FROM agents_registry
-                    ORDER BY name
+                    SELECT 
+                        a.name, a.path, a.code, a.description, a.enabled,
+                        vd.id as visual_design_id
+                    FROM agents_registry a
+                    LEFT JOIN visual_agent_designs vd ON vd.agent_name = a.name
+                    ORDER BY a.name
                     """
                 )
                 rows = cur.fetchall()
@@ -30,7 +33,8 @@ async def list_agents():
                 path=row[1],
                 code=row[2],
                 description=row[3],
-                enabled=row[4]
+                enabled=row[4],
+                visual_design_id=row[5]
             )
             for row in rows
         ]
@@ -40,15 +44,18 @@ async def list_agents():
 
 @router.get("/{agent_name}", response_model=AgentResponse)
 async def get_agent(agent_name: str):
-    """Get a specific agent."""
+    """Get a specific agent with its linked visual design ID (if any)."""
     try:
         with get_pg_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT name, path, code, description, enabled
-                    FROM agents_registry
-                    WHERE name = %s
+                    SELECT 
+                        a.name, a.path, a.code, a.description, a.enabled,
+                        vd.id as visual_design_id
+                    FROM agents_registry a
+                    LEFT JOIN visual_agent_designs vd ON vd.agent_name = a.name
+                    WHERE a.name = %s
                     """,
                     (agent_name,)
                 )
@@ -62,7 +69,8 @@ async def get_agent(agent_name: str):
             path=row[1],
             code=row[2],
             description=row[3],
-            enabled=row[4]
+            enabled=row[4],
+            visual_design_id=row[5]
         )
     except HTTPException:
         raise
@@ -196,7 +204,7 @@ async def toggle_agent(agent_name: str):
 
 @router.patch("/{agent_name}/rename", response_model=AgentResponse)
 async def rename_agent(agent_name: str, rename_request: AgentRename):
-    """Rename an agent."""
+    """Rename an agent and its linked visual design (if any)."""
     try:
         new_name = rename_request.new_name
         
@@ -223,6 +231,16 @@ async def rename_agent(agent_name: str, rename_request: AgentRename):
                 if cur.fetchone():
                     raise HTTPException(status_code=400, detail=f"Agent '{new_name}' already exists")
                 
+                # Also rename the linked visual design (if any)
+                cur.execute(
+                    """
+                    UPDATE visual_agent_designs
+                    SET name = %s, agent_name = %s
+                    WHERE agent_name = %s
+                    """,
+                    (new_name, new_name, agent_name)
+                )
+                
                 # Rename the agent
                 cur.execute(
                     """
@@ -234,6 +252,15 @@ async def rename_agent(agent_name: str, rename_request: AgentRename):
                     (new_name, f"db://agents/{new_name}", agent_name)
                 )
                 row = cur.fetchone()
+                
+                # Get the visual_design_id if any
+                cur.execute(
+                    "SELECT id FROM visual_agent_designs WHERE agent_name = %s",
+                    (new_name,)
+                )
+                design_row = cur.fetchone()
+                visual_design_id = design_row[0] if design_row else None
+                
             conn.commit()
         
         return AgentResponse(
@@ -241,7 +268,8 @@ async def rename_agent(agent_name: str, rename_request: AgentRename):
             path=row[1],
             code=row[2],
             description=row[3],
-            enabled=row[4]
+            enabled=row[4],
+            visual_design_id=visual_design_id
         )
     except HTTPException:
         raise

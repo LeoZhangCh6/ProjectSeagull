@@ -19,7 +19,7 @@ TEMPLATES = {
                 {
                     "id": "signal-1",
                     "type": "signal",
-                    "position": {"x": 50, "y": 100},
+                    "position": {"x": 65, "y": 120},
                     "data": {
                         "label": "Price Signal",
                         "signalId": "AAPL_day_close",
@@ -29,7 +29,7 @@ TEMPLATES = {
                 {
                     "id": "slice-1",
                     "type": "slice",
-                    "position": {"x": 250, "y": 50},
+                    "position": {"x": 325, "y": 40},
                     "data": {
                         "label": "Last 50 bars",
                         "n": 50
@@ -38,7 +38,7 @@ TEMPLATES = {
                 {
                     "id": "slice-2",
                     "type": "slice",
-                    "position": {"x": 250, "y": 150},
+                    "position": {"x": 325, "y": 200},
                     "data": {
                         "label": "Last 20 bars",
                         "n": 20
@@ -47,7 +47,7 @@ TEMPLATES = {
                 {
                     "id": "mean-1",
                     "type": "mean",
-                    "position": {"x": 450, "y": 50},
+                    "position": {"x": 585, "y": 40},
                     "data": {
                         "label": "Slow SMA (50)",
                         "axis": None
@@ -56,7 +56,7 @@ TEMPLATES = {
                 {
                     "id": "mean-2",
                     "type": "mean",
-                    "position": {"x": 450, "y": 150},
+                    "position": {"x": 585, "y": 200},
                     "data": {
                         "label": "Fast SMA (20)",
                         "axis": None
@@ -65,7 +65,7 @@ TEMPLATES = {
                 {
                     "id": "subtract-1",
                     "type": "subtract",
-                    "position": {"x": 650, "y": 100},
+                    "position": {"x": 845, "y": 120},
                     "data": {
                         "label": "Fast - Slow"
                     }
@@ -73,7 +73,7 @@ TEMPLATES = {
                 {
                     "id": "clip-1",
                     "type": "clip",
-                    "position": {"x": 850, "y": 100},
+                    "position": {"x": 1105, "y": 120},
                     "data": {
                         "label": "Clip to [-1, 1]",
                         "min": -1,
@@ -83,7 +83,7 @@ TEMPLATES = {
                 {
                     "id": "output-1",
                     "type": "output",
-                    "position": {"x": 1050, "y": 100},
+                    "position": {"x": 1365, "y": 120},
                     "data": {
                         "label": "Position Delta"
                     }
@@ -114,7 +114,7 @@ TEMPLATES = {
                 {
                     "id": "signal-1",
                     "type": "signal",
-                    "position": {"x": 50, "y": 100},
+                    "position": {"x": 65, "y": 120},
                     "data": {
                         "label": "Price Signal",
                         "signalId": "AAPL_day_close"
@@ -123,7 +123,7 @@ TEMPLATES = {
                 {
                     "id": "slice-1",
                     "type": "slice",
-                    "position": {"x": 250, "y": 100},
+                    "position": {"x": 325, "y": 120},
                     "data": {
                         "label": "Last 10 bars",
                         "n": 10
@@ -132,7 +132,7 @@ TEMPLATES = {
                 {
                     "id": "normalize-1",
                     "type": "normalize",
-                    "position": {"x": 450, "y": 100},
+                    "position": {"x": 585, "y": 120},
                     "data": {
                         "label": "Normalize"
                     }
@@ -140,7 +140,7 @@ TEMPLATES = {
                 {
                     "id": "linear-1",
                     "type": "linear",
-                    "position": {"x": 650, "y": 100},
+                    "position": {"x": 845, "y": 120},
                     "data": {
                         "label": "Hidden Layer",
                         "name": "hidden1",
@@ -151,7 +151,7 @@ TEMPLATES = {
                 {
                     "id": "relu-1",
                     "type": "relu",
-                    "position": {"x": 850, "y": 100},
+                    "position": {"x": 1105, "y": 120},
                     "data": {
                         "label": "ReLU"
                     }
@@ -159,7 +159,7 @@ TEMPLATES = {
                 {
                     "id": "linear-2",
                     "type": "linear",
-                    "position": {"x": 1050, "y": 100},
+                    "position": {"x": 1365, "y": 120},
                     "data": {
                         "label": "Output Layer",
                         "name": "output_layer",
@@ -170,7 +170,7 @@ TEMPLATES = {
                 {
                     "id": "tanh-1",
                     "type": "tanh",
-                    "position": {"x": 1250, "y": 100},
+                    "position": {"x": 1625, "y": 120},
                     "data": {
                         "label": "Tanh (scale to [-1,1])"
                     }
@@ -178,7 +178,7 @@ TEMPLATES = {
                 {
                     "id": "output-1",
                     "type": "output",
-                    "position": {"x": 1450, "y": 100},
+                    "position": {"x": 1885, "y": 120},
                     "data": {
                         "label": "Position Delta"
                     }
@@ -208,7 +208,7 @@ TEMPLATES = {
                 {
                     "id": "signal-1",
                     "type": "signal",
-                    "position": {"x": 50, "y": 100},
+                    "position": {"x": 65, "y": 120},
                     "data": {
                         "label": "Price Signal",
                         "signalId": "AAPL_hour_close"
@@ -217,7 +217,7 @@ TEMPLATES = {
                 {
                     "id": "slice-1",
                     "type": "slice",
-                    "position": {"x": 250, "y": 100},
+                    "position": {"x": 325, "y": 120},
                     "data": {
                         "label": "Sequence (20 bars)",
                         "n": 20
@@ -226,7 +226,7 @@ TEMPLATES = {
                 {
                     "id": "normalize-1",
                     "type": "normalize",
-                    "position": {"x": 450, "y": 100},
+                    "position": {"x": 585, "y": 120},
                     "data": {
                         "label": "Normalize"
                     }
@@ -234,7 +234,7 @@ TEMPLATES = {
                 {
                     "id": "rolling_mean-1",
                     "type": "rolling_mean",
-                    "position": {"x": 650, "y": 50},
+                    "position": {"x": 845, "y": 40},
                     "data": {
                         "label": "Rolling Mean (5)",
                         "window": 5
@@ -243,7 +243,7 @@ TEMPLATES = {
                 {
                     "id": "rolling_std-1",
                     "type": "rolling_std",
-                    "position": {"x": 650, "y": 150},
+                    "position": {"x": 845, "y": 200},
                     "data": {
                         "label": "Rolling Std (5)",
                         "window": 5
@@ -252,7 +252,7 @@ TEMPLATES = {
                 {
                     "id": "subtract-1",
                     "type": "subtract",
-                    "position": {"x": 850, "y": 100},
+                    "position": {"x": 1105, "y": 120},
                     "data": {
                         "label": "Mean - Std"
                     }
@@ -260,7 +260,7 @@ TEMPLATES = {
                 {
                     "id": "mean-1",
                     "type": "mean",
-                    "position": {"x": 1050, "y": 100},
+                    "position": {"x": 1365, "y": 120},
                     "data": {
                         "label": "Average",
                         "axis": None
@@ -269,7 +269,7 @@ TEMPLATES = {
                 {
                     "id": "clip-1",
                     "type": "clip",
-                    "position": {"x": 1250, "y": 100},
+                    "position": {"x": 1625, "y": 120},
                     "data": {
                         "label": "Clip",
                         "min": -1,
@@ -279,7 +279,7 @@ TEMPLATES = {
                 {
                     "id": "output-1",
                     "type": "output",
-                    "position": {"x": 1450, "y": 100},
+                    "position": {"x": 1885, "y": 120},
                     "data": {
                         "label": "Position Delta"
                     }

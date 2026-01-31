@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Trash2, Copy, RefreshCw, ToggleLeft, ToggleRight, Eye, Upload, Edit2, Check, X, Workflow, Plus } from 'lucide-react';
+import { Trash2, Copy, RefreshCw, ToggleLeft, ToggleRight, Eye, Upload, Edit2, Check, X, Workflow, Plus, Code, Palette, Download } from 'lucide-react';
 import { agentsApi, visualDesignerApi } from '../../api/client';
 import type { Agent, VisualDesign, DesignTemplate } from '../../types';
 import { VisualDesigner } from '../VisualDesigner';
@@ -26,7 +26,6 @@ export function AgentsTab() {
   
   // Visual Designer state
   const [showDesigner, setShowDesigner] = useState(false);
-  const [visualDesigns, setVisualDesigns] = useState<VisualDesign[]>([]);
   const [templates, setTemplates] = useState<DesignTemplate[]>([]);
   const [editingDesign, setEditingDesign] = useState<VisualDesign | undefined>(undefined);
   
@@ -48,18 +47,8 @@ export function AgentsTab() {
   
   useEffect(() => {
     loadAgents();
-    loadVisualDesigns();
     loadTemplates();
   }, []);
-  
-  const loadVisualDesigns = async () => {
-    try {
-      const data = await visualDesignerApi.list();
-      setVisualDesigns(data);
-    } catch (e) {
-      console.error('Failed to load visual designs:', e);
-    }
-  };
   
   const loadTemplates = async () => {
     try {
@@ -78,22 +67,21 @@ export function AgentsTab() {
   const handleCloseDesigner = () => {
     setShowDesigner(false);
     setEditingDesign(undefined);
-    loadVisualDesigns();
     loadAgents();
   };
   
-  const handleDeleteDesign = async (id: number, name: string) => {
-    if (!confirm(`Delete design "${name}"?`)) return;
+  const handleEditVisualAgent = async (designId: number) => {
     try {
-      await visualDesignerApi.delete(id);
-      await loadVisualDesigns();
+      const design = await visualDesignerApi.get(designId);
+      setEditingDesign(design);
+      setShowDesigner(true);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to delete design');
+      setError(e instanceof Error ? e.message : 'Failed to load visual design');
     }
   };
   
   const handleCreateFromTemplate = async (templateName: string) => {
-    const designName = prompt('Enter a name for the new design:');
+    const designName = prompt('Enter a name for the new agent:');
     if (!designName) return;
     
     try {
@@ -120,9 +108,18 @@ export function AgentsTab() {
     }
   };
   
-  const handleDelete = async (name: string) => {
-    if (!confirm(`Delete agent "${name}"?`)) return;
+  const handleDelete = async (name: string, visualDesignId?: number) => {
+    const isVisual = !!visualDesignId;
+    const message = isVisual 
+      ? `Delete visual agent "${name}" and its design?`
+      : `Delete agent "${name}"?`;
+    
+    if (!confirm(message)) return;
     try {
+      // Delete the visual design first if it exists (to avoid orphaned designs)
+      if (visualDesignId) {
+        await visualDesignerApi.delete(visualDesignId);
+      }
       await agentsApi.delete(name);
       await loadAgents();
     } catch (e) {
@@ -201,6 +198,28 @@ export function AgentsTab() {
     }
   };
   
+  const handleDownloadCode = (agent: Agent) => {
+    if (!agent.code) {
+      setError('No code available for this agent');
+      return;
+    }
+    
+    // Create a blob with the Python code
+    const blob = new Blob([agent.code], { type: 'text/x-python' });
+    const url = URL.createObjectURL(blob);
+    
+    // Create a temporary link and trigger download
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${agent.name}.py`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    
+    // Clean up the URL object
+    URL.revokeObjectURL(url);
+  };
+  
   const selectedAgentCode = agents.find(a => a.name === viewingCode)?.code;
   
   return (
@@ -230,7 +249,7 @@ export function AgentsTab() {
             className="btn btn-primary flex items-center gap-2"
           >
             <Plus className="w-4 h-4" />
-            New Design
+            New Visual Agent
           </button>
         </div>
         
@@ -240,7 +259,7 @@ export function AgentsTab() {
         
         {/* Templates */}
         {templates.length > 0 && (
-          <div className="mb-4">
+          <div>
             <div className="text-xs text-[var(--text-secondary)] mb-2">Start from a template:</div>
             <div className="flex flex-wrap gap-2">
               {templates.map(t => (
@@ -252,40 +271,6 @@ export function AgentsTab() {
                 >
                   {t.title}
                 </button>
-              ))}
-            </div>
-          </div>
-        )}
-        
-        {/* Saved Designs */}
-        {visualDesigns.length > 0 && (
-          <div>
-            <div className="text-xs text-[var(--text-secondary)] mb-2">Saved designs ({visualDesigns.length}):</div>
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-              {visualDesigns.map(d => (
-                <div
-                  key={d.id}
-                  className="p-2 rounded bg-[var(--bg-tertiary)] border border-[var(--border-color)] hover:border-purple-500/50 transition-colors group"
-                >
-                  <div className="flex items-center justify-between">
-                    <button
-                      onClick={() => handleOpenDesigner(d)}
-                      className="text-sm font-medium hover:text-purple-400 truncate flex-1 text-left"
-                    >
-                      {d.name}
-                    </button>
-                    <button
-                      onClick={() => handleDeleteDesign(d.id, d.name)}
-                      className="p-1 text-red-400 hover:text-red-300 opacity-0 group-hover:opacity-100 transition-opacity"
-                    >
-                      <Trash2 className="w-3 h-3" />
-                    </button>
-                  </div>
-                  <div className="text-xs text-[var(--text-secondary)] truncate">
-                    {d.symbol} • {d.primary_timespan}×{d.primary_multiplier}
-                    {d.agent_name && <span className="ml-1 text-green-400">• Deployed</span>}
-                  </div>
-                </div>
               ))}
             </div>
           </div>
@@ -383,7 +368,7 @@ export function AgentsTab() {
         
         {agents.length === 0 ? (
           <div className="text-center py-8 text-[var(--text-secondary)]">
-            No agents registered. Run init_db.py to auto-register agents from Agents/instances/.
+            No agents registered. Create a visual agent above or upload a Python file.
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -391,10 +376,10 @@ export function AgentsTab() {
               <thead>
                 <tr>
                   <th>Name</th>
+                  <th>Type</th>
                   <th>Description</th>
-                  <th>Has Code</th>
                   <th>Enabled</th>
-                  <th className="w-24">Actions</th>
+                  <th className="w-40">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -433,14 +418,20 @@ export function AgentsTab() {
                         agent.name
                       )}
                     </td>
-                    <td className="text-[var(--text-secondary)]">{agent.description}</td>
                     <td>
-                      {agent.code ? (
-                        <span className="text-green-400">Yes</span>
+                      {agent.visual_design_id ? (
+                        <span className="inline-flex items-center gap-1 text-purple-400">
+                          <Palette className="w-3 h-3" />
+                          Visual
+                        </span>
                       ) : (
-                        <span className="text-yellow-400">File only</span>
+                        <span className="inline-flex items-center gap-1 text-blue-400">
+                          <Code className="w-3 h-3" />
+                          Code
+                        </span>
                       )}
                     </td>
+                    <td className="text-[var(--text-secondary)]">{agent.description}</td>
                     <td>
                       <button onClick={() => handleToggle(agent.name)}>
                         {agent.enabled ? (
@@ -451,7 +442,18 @@ export function AgentsTab() {
                       </button>
                     </td>
                     <td>
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-1">
+                        {agent.visual_design_id ? (
+                          <button
+                            onClick={() => handleEditVisualAgent(agent.visual_design_id!)}
+                            className="text-purple-400 hover:text-purple-300 p-1"
+                            title="Edit in Visual Designer"
+                          >
+                            <Workflow className="w-4 h-4" />
+                          </button>
+                        ) : (
+                          <span className="w-6" />
+                        )}
                         <button
                           onClick={() => handleStartRename(agent.name)}
                           className="text-yellow-400 hover:text-yellow-300 p-1"
@@ -461,17 +463,26 @@ export function AgentsTab() {
                           <Edit2 className="w-4 h-4" />
                         </button>
                         {agent.code && (
-                          <button
-                            onClick={() => setViewingCode(viewingCode === agent.name ? null : agent.name)}
-                            className="text-blue-400 hover:text-blue-300 p-1"
-                            title="View code"
-                          >
-                            <Eye className="w-4 h-4" />
-                          </button>
+                          <>
+                            <button
+                              onClick={() => setViewingCode(viewingCode === agent.name ? null : agent.name)}
+                              className="text-blue-400 hover:text-blue-300 p-1"
+                              title="View code"
+                            >
+                              <Eye className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => handleDownloadCode(agent)}
+                              className="text-green-400 hover:text-green-300 p-1"
+                              title="Download code"
+                            >
+                              <Download className="w-4 h-4" />
+                            </button>
+                          </>
                         )}
-                        {!agent.code && <span className="w-6" />}
+                        {!agent.code && <span className="w-12" />}
                         <button
-                          onClick={() => handleDelete(agent.name)}
+                          onClick={() => handleDelete(agent.name, agent.visual_design_id)}
                           className="text-red-400 hover:text-red-300 p-1"
                           title="Delete"
                         >

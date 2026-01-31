@@ -74,6 +74,8 @@ class AgentCreate(AgentBase):
 
 
 class AgentResponse(AgentBase):
+    visual_design_id: Optional[int] = None  # ID of linked visual design, if any
+    
     class Config:
         from_attributes = True
 

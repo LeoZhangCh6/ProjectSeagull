@@ -22,13 +22,45 @@ NODE_DIMENSION_RULES = {
         "inputs": {},
         "output_dim": lambda data, inputs: data.get("shape", [1]),
     },
-    "slice": {
-        "inputs": {"input": "any"},
+    "range": {
+        "inputs": {},
         "output_dim": lambda data, inputs: [data.get("n", 10)],
     },
+    "agent_state": {
+        "inputs": {},
+        "output_dim": lambda data, inputs: ["scalar"],  # Outputs 3 scalars
+    },
+    "agent_equity_curve": {
+        "inputs": {},
+        "output_dim": lambda data, inputs: [data.get("historyLength", 50)],
+    },
+    "custom_state": {
+        "inputs": {"new_value": "optional"},
+        "output_dim": lambda data, inputs: data.get("shape", [1]),
+    },
+    "sign": {
+        "inputs": {"input": "any"},
+        "output_dim": lambda data, inputs: inputs.get("input", ["T"]),
+    },
+    "sin": {
+        "inputs": {"input": "any"},
+        "output_dim": lambda data, inputs: inputs.get("input", ["T"]),
+    },
+    "cos": {
+        "inputs": {"input": "any"},
+        "output_dim": lambda data, inputs: inputs.get("input", ["T"]),
+    },
+    "slice": {
+        "inputs": {"input": "any"},
+        "output_dim": lambda data, inputs: [data.get("n", 10) - data.get("m", 0)],
+    },
     "concat": {
-        "inputs": {"input1": "any", "input2": "any"},
-        "output_dim": lambda data, inputs: ["concat"],  # Combined dimension
+        "inputs": {},  # Dynamic inputs based on numInputs
+        "output_dim": lambda data, inputs: ["N", "L"],  # (numInputs, L) matrix
+    },
+    "transpose": {
+        "inputs": {"input": "any"},
+        "output_dim": lambda data, inputs: ["transposed"],
     },
     "add": {
         "inputs": {"a": "any", "b": "broadcast"},
@@ -52,15 +84,19 @@ NODE_DIMENSION_RULES = {
     },
     "mean": {
         "inputs": {"input": "any"},
-        "output_dim": lambda data, inputs: ["scalar"] if data.get("axis") is None else inputs.get("input", ["scalar"]),
+        "output_dim": lambda data, inputs: ["scalar"],
     },
     "sum": {
         "inputs": {"input": "any"},
-        "output_dim": lambda data, inputs: ["scalar"] if data.get("axis") is None else inputs.get("input", ["scalar"]),
+        "output_dim": lambda data, inputs: ["scalar"],
     },
     "std": {
         "inputs": {"input": "any"},
-        "output_dim": lambda data, inputs: ["scalar"] if data.get("axis") is None else inputs.get("input", ["scalar"]),
+        "output_dim": lambda data, inputs: ["scalar"],
+    },
+    "variance": {
+        "inputs": {"input": "any"},
+        "output_dim": lambda data, inputs: ["scalar"],
     },
     "min": {
         "inputs": {"input": "any"},
@@ -85,6 +121,18 @@ NODE_DIMENSION_RULES = {
     "rolling_std": {
         "inputs": {"input": "any"},
         "output_dim": lambda data, inputs: inputs.get("input", ["T"]),
+    },
+    "shift": {
+        "inputs": {"input": "any"},
+        "output_dim": lambda data, inputs: ["T-n"] if data.get("fillMode", "none") == "none" else inputs.get("input", ["T"]),
+    },
+    "shift_diff": {
+        "inputs": {"input": "any"},
+        "output_dim": lambda data, inputs: ["T-n"],  # Output is shorter by n elements
+    },
+    "conv1d_custom": {
+        "inputs": {"input": "any"},
+        "output_dim": lambda data, inputs: inputs.get("input", ["T"]) if data.get("padding") == "same" else ["T-k+1"],
     },
     "linear": {
         "inputs": {"input": "any"},

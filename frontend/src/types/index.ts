@@ -31,6 +31,7 @@ export interface Agent {
   code?: string;
   description?: string;
   enabled: boolean;
+  visual_design_id?: number;  // ID of linked visual design, if any
 }
 
 // Simulation Types
@@ -204,28 +205,46 @@ export interface DesignTemplate {
 
 // Node type definitions for the visual designer
 export type VisualNodeType = 
+  // Data Sources
   | 'signal'
   | 'constant'
   | 'variable'
+  | 'range'
+  // 1-D Transformations
   | 'slice'
-  | 'concat'
   | 'add'
   | 'subtract'
   | 'multiply'
   | 'divide'
-  | 'matmul'
-  | 'mean'
-  | 'sum'
-  | 'std'
-  | 'min'
-  | 'max'
   | 'normalize'
   | 'clip'
   | 'rolling_mean'
   | 'rolling_std'
+  | 'shift'
+  | 'shift_diff'
+  | 'conv1d_custom'
+  | 'sign'
+  | 'sin'
+  | 'cos'
+  // Data Sources
+  | 'agent_state'
+  | 'agent_equity_curve'
+  | 'custom_state'
   | 'rsi'
   | 'macd'
   | 'bollinger'
+  // Aggregation
+  | 'sum'
+  | 'mean'
+  | 'std'
+  | 'variance'
+  | 'min'
+  | 'max'
+  // Multi-dimension Transforms
+  | 'concat'
+  | 'transpose'
+  | 'matmul'
+  // ML Layers
   | 'linear'
   | 'relu'
   | 'tanh'
@@ -233,12 +252,13 @@ export type VisualNodeType =
   | 'softmax'
   | 'lstm'
   | 'conv1d'
+  // Output
   | 'output';
 
 export interface NodeTypeDefinition {
   type: VisualNodeType;
   label: string;
-  category: 'data' | 'operation' | 'indicator' | 'ml' | 'output';
+  category: 'data' | 'transform1d' | 'aggregation' | 'transformNd' | 'ml' | 'output';
   inputs: { name: string; type: string }[];
   outputs: { name: string; type: string }[];
   defaultData: Record<string, any>;
