@@ -85,10 +85,18 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
     set((state) => {
       const jobs = [...state.jobs];
       if (jobs[jobIndex]) {
+        const prevCurve = jobs[jobIndex].equity_curve;
+        const curvePoint: { time: string; equity: number; position?: number; cash?: number; close?: number } = {
+          time: bar?.time ?? (prevCurve.length ? prevCurve[prevCurve.length - 1].time : ''),
+          equity,
+          position,
+          cash,
+          close: bar?.close,
+        };
         jobs[jobIndex] = {
           ...jobs[jobIndex],
-          bars: [...jobs[jobIndex].bars, bar],
-          equity_curve: [...jobs[jobIndex].equity_curve, { time: bar.time, equity }],
+          bars: bar ? [...jobs[jobIndex].bars, bar] : jobs[jobIndex].bars,
+          equity_curve: [...prevCurve, curvePoint],
         };
       }
       return { jobs };
@@ -99,12 +107,20 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
     set((state) => {
       const jobs = [...state.jobs];
       if (jobs[jobIndex]) {
+        const job = jobs[jobIndex];
+        // Use portfolio_curve from result when available (has position, cash, close per bar)
+        const equity_curve = result?.portfolio_curve?.length
+          ? result.portfolio_curve.map((p: { time: string; equity: number; position: number; cash: number; close: number }) => ({
+              time: p.time, equity: p.equity, position: p.position, cash: p.cash, close: p.close,
+            }))
+          : job.equity_curve;
         jobs[jobIndex] = {
-          ...jobs[jobIndex],
+          ...job,
           status: result?.error ? 'error' : 'completed',
           final_result: result,
-          // If result includes all_bars, replace bars array with complete data
-          bars: result?.all_bars || jobs[jobIndex].bars,
+          bars: result?.all_bars || job.bars,
+          trades: result?.trades ?? job.trades,
+          equity_curve,
         };
       }
       return { jobs };

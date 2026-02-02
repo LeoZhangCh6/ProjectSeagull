@@ -46,4 +46,7 @@ if __name__ == "__main__":
         port=8000,
         reload=True,
         reload_dirs=[_HERE],
+        ws_ping_interval=30.0,  # Send ping every 30s
+        ws_ping_timeout=120.0,  # Wait 120s for pong before closing (read timeout; helps when tab backgrounded)
+        timeout_keep_alive=30,  # HTTP keep-alive: close idle connections after 30s (default 5)
     )

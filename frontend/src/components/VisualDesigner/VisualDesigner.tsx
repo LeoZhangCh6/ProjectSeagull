@@ -82,6 +82,12 @@ function computeNodeShape(
 ): Shape | null {
   const getInputShape = (key: string): Shape | null => inputShapes[key] || null;
   
+  // Scalar category nodes: always output [1, 1] regardless of input
+  const nodeTypeDef = NODE_TYPES[nodeType];
+  if (nodeTypeDef?.category === 'scalar') {
+    return [1, 1];
+  }
+  
   switch (nodeType) {
     // Data Sources - all output (1, L) or (1, N)
     case 'signal':
@@ -104,9 +110,13 @@ function computeNodeShape(
     }
     
     case 'range': {
-      const n = data.n || 10;
+      const n = getDataNumber(data, 'n', 10);
       return [1, n];
     }
+    
+    // Timestamp - outputs 6 scalars (year, month, weeknumber, day_of_week, hour, timestamp_seconds)
+    case 'timestamp':
+      return [1, 1];
     
     // Agent State - outputs 3 scalars
     case 'agent_state':
@@ -114,30 +124,32 @@ function computeNodeShape(
     
     // Agent Equity Curve - outputs historical equity signal
     case 'agent_equity_curve': {
-      const historyLength = data.historyLength || 50;
+      const historyLength = getDataNumber(data, 'historyLength', 50);
       return [1, historyLength];
     }
     
     // Custom State - shape depends on user setting
-    case 'custom_state': {
+    case 'custom_state':
+    case 'custom_state_t':
+    case 'custom_state_t1': {
       const shape = data.shape || [1];
       if (shape.length === 1) {
         return shape[0] === 1 ? [1, 1] : [1, shape[0]];
       }
       return [shape[0], shape[1] || 1];
     }
-    
+
     // Slice - outputs (1, N-M)
     case 'slice': {
-      const n = data.n || 10;
-      const m = data.m || 0;
+      const n = getDataNumber(data, 'n', 10);
+      const m = getDataNumber(data, 'm', 0);
       return [1, n - m];
     }
     
     // Shift - depends on fill mode
     case 'shift': {
       const inputShape = getInputShape('input');
-      const n = data.n || 1;
+      const n = getDataNumber(data, 'n', 1);
       const fillMode = data.fillMode || 'none';
       
       if (!inputShape) return [1, 'L'];
@@ -154,7 +166,7 @@ function computeNodeShape(
     // Shift-Diff - always shorter
     case 'shift_diff': {
       const inputShape = getInputShape('input');
-      const n = data.n || 1;
+      const n = getDataNumber(data, 'n', 1);
       
       if (!inputShape) return [1, 'L'];
       const [rows, cols] = inputShape;
@@ -163,11 +175,10 @@ function computeNodeShape(
       return [rows, Math.max(0, cols - n)];
     }
     
-    // Conv1D Custom - output depends on padding mode
+    // Conv1D Custom - output depends on padding mode; kernel from input
     case 'conv1d_custom': {
       const inputShape = getInputShape('input');
-      const kernelStr = data.kernel || '0.25, 0.5, 0.25';
-      const kernelSize = kernelStr.split(',').filter((s: string) => s.trim()).length;
+      const kernelShape = getInputShape('kernel');
       const padding = data.padding || 'valid';
       
       if (!inputShape) return [1, 'L'];
@@ -177,6 +188,7 @@ function computeNodeShape(
         return inputShape; // Same length as input
       }
       // 'valid' padding - output length = input length - kernel_size + 1
+      const kernelSize = kernelShape && kernelShape[1] !== 'L' ? (kernelShape[1] as number) : 1;
       if (cols === 'L') return [rows, 'L'];
       return [rows, Math.max(0, (cols as number) - kernelSize + 1)];
     }
@@ -203,11 +215,13 @@ function computeNodeShape(
       return [rows, cols];
     }
     
-    // Normalize, Clip, etc. - same shape as input
+    // Normalize, Clip, Round, etc. - same shape as input
     case 'normalize':
     case 'clip':
+    case 'round':
     case 'rolling_mean':
     case 'rolling_std':
+    case 'ema':
     case 'rsi':
     case 'relu':
     case 'tanh':
@@ -215,7 +229,8 @@ function computeNodeShape(
     case 'softmax':
     case 'sign':
     case 'sin':
-    case 'cos': {
+    case 'cos':
+    case 'abs': {
       const inputShape = getInputShape('input');
       return inputShape || [1, 'L'];
     }
@@ -308,6 +323,11 @@ function computeNodeShape(
     case 'output':
       return [1, 1];
     
+    // View Output - pass-through (meter/debugger)
+    case 'view_output': {
+      return getInputShape('input');
+    }
+    
     default:
       return null;
   }
@@ -318,7 +338,22 @@ function computeNodeShape(
 // ============================================================================
 
 // Node output types: 'tensor' (1D array) or 'scalar' (single number)
-type PreviewData = { type: 'tensor'; values: number[] } | { type: 'scalar'; value: number };
+type PreviewData = { type: 'tensor'; values: number[] } | { type: 'scalar'; value: number } | { type: 'scalars'; values: number[] } | { type: 'matrix'; values: number[][] };
+
+// ISO week number of year (1–53)
+function getWeekNumber(d: Date): number {
+  const start = new Date(d.getFullYear(), 0, 1);
+  const diff = d.getTime() - start.getTime();
+  return Math.ceil((diff / 86400000 + start.getDay() + 1) / 7);
+}
+
+// Parse numeric value from node data (may be string from text input to allow empty and negative typing)
+function getDataNumber(data: Record<string, any>, key: string, fallback: number): number {
+  const v = data[key];
+  if (typeof v === 'number' && !isNaN(v)) return v;
+  const n = parseFloat(v);
+  return isNaN(n) ? fallback : n;
+}
 
 // Generate base signal data for a signal node
 function generateSignalPreviewData(signalId: string, cachedData?: number[]): PreviewData {
@@ -350,6 +385,7 @@ function computeNodePreview(
     const input = inputs[key];
     if (!input) return [];
     if (input.type === 'tensor') return input.values;
+    if (input.type === 'scalars') return input.values;  // Multi-scalar as array
     return Array(20).fill(input.value); // Expand scalar to tensor
   };
   
@@ -357,8 +393,18 @@ function computeNodePreview(
     const input = inputs[key];
     if (!input) return 0;
     if (input.type === 'scalar') return input.value;
+    if (input.type === 'scalars') return input.values[0] || 0;  // Use first scalar
     // Reduce tensor to scalar (use last value)
     return input.values.length > 0 ? input.values[input.values.length - 1] : 0;
+  };
+
+  // For binary ops: treat scalar, scalars[1], and tensor[1] as scalar (shows number not sparkline)
+  const getScalarLike = (input: PreviewData | undefined) => {
+    if (!input) return { isScalar: false, value: null as number | null };
+    if (input.type === 'scalar') return { isScalar: true, value: input.value };
+    if (input.type === 'scalars' && input.values.length === 1) return { isScalar: true, value: input.values[0] };
+    if (input.type === 'tensor' && input.values.length === 1) return { isScalar: true, value: input.values[0] };
+    return { isScalar: false, value: null };
   };
 
   switch (nodeType) {
@@ -369,7 +415,7 @@ function computeNodePreview(
     }
     
     case 'constant': {
-      const value = data.value ?? 0;
+      const value = getDataNumber(data, 'value', 0);
       const shape = data.shape || [1];
       if (shape.length === 1 && shape[0] === 1) {
         return { type: 'scalar', value };
@@ -407,17 +453,17 @@ function computeNodePreview(
     
     // Range node - linear range
     case 'range': {
-      const n = data.n || 10;
-      const start = data.start ?? 0;
+      const n = getDataNumber(data, 'n', 10);
+      const start = getDataNumber(data, 'start', 0);
       const mode = data.mode || 'step';
       
       let values: number[];
       if (mode === 'step') {
-        const step = data.step ?? 1;
+        const step = getDataNumber(data, 'step', 1);
         values = Array.from({ length: n }, (_, i) => start + i * step);
       } else {
         // 'end' mode
-        const end = data.end ?? 10;
+        const end = getDataNumber(data, 'end', 10);
         const step = n > 1 ? (end - start) / (n - 1) : 0;
         values = Array.from({ length: n }, (_, i) => start + i * step);
       }
@@ -425,14 +471,26 @@ function computeNodePreview(
     }
     
     // Agent State - returns demo values (shares, equity, cash)
+    // Timestamp - demo values from current date
+    case 'timestamp': {
+      const now = new Date();
+      const year = now.getFullYear();
+      const month = now.getMonth() + 1;
+      const weekNum = getWeekNumber(now);
+      const dayOfWeek = now.getDay(); // 0=Sun, 1=Mon, ...
+      const hour = now.getHours();
+      const tsSec = Math.floor(now.getTime() / 1000);
+      return { type: 'scalars', values: [year, month, weekNum, dayOfWeek, hour, tsSec] };
+    }
+    
+    // Agent State - returns 3 scalars (shares, equity, cash), each dot outputs one
     case 'agent_state': {
       const shares = data.demoShares ?? 10;
       const equity = data.demoEquity ?? 100000;
       // For demo: assume stock price ~$100, so cash = equity - shares * 100
       const stockPrice = 100;
       const cash = equity - shares * stockPrice;
-      // Return as scalar (first output - shares)
-      return { type: 'scalar', value: shares };
+      return { type: 'scalars', values: [shares, equity, cash] };
     }
     
     // Agent Equity Curve - simulated historical equity with noise
@@ -453,7 +511,8 @@ function computeNodePreview(
     }
     
     // Custom State - returns default value
-    case 'custom_state': {
+    case 'custom_state':
+    case 'custom_state_t': {
       const defaultValue = data.defaultValue || '0';
       const values = defaultValue.split(',').map((s: string) => parseFloat(s.trim()) || 0);
       if (values.length === 1) {
@@ -461,12 +520,14 @@ function computeNodePreview(
       }
       return { type: 'tensor', values: values.slice(0, 20) };
     }
+    case 'custom_state_t1':
+      return { type: 'scalar', value: 0 };
     
     // Slice - outputs tensor, window from -N to -M (M=0 means end)
     case 'slice': {
       const inputVals = getTensorValues('input');
-      const n = data.n || 10;
-      const m = data.m || 0;
+      const n = getDataNumber(data, 'n', 10);
+      const m = getDataNumber(data, 'm', 0);
       
       if (inputVals.length === 0) return { type: 'tensor', values: [] };
       
@@ -477,31 +538,32 @@ function computeNodePreview(
       return { type: 'tensor', values: inputVals.slice(startIdx, endIdx) };
     }
     
-    // Concat - outputs tensor (N x L matrix represented as flattened array for preview)
+    // Concat - outputs tensor or matrix (2D when stacking rows)
     case 'concat': {
       const numInputs = data.numInputs || 2;
       const allInputs: number[][] = [];
+      const maxCols = 20;
       for (let i = 0; i < numInputs; i++) {
         const inputKey = `input_${i}`;
         const inputVals = getTensorValues(inputKey);
         if (inputVals.length > 0) {
-          allInputs.push(inputVals);
+          allInputs.push(inputVals.slice(0, maxCols));
         }
       }
-      // For preview, just show the concatenated values (first 20)
-      const combined = allInputs.flat();
-      return { type: 'tensor', values: combined.slice(0, 20) };
+      if (allInputs.length === 0) return { type: 'tensor', values: [] };
+      if (allInputs.length === 1) return { type: 'tensor', values: allInputs[0] };
+      // 2+ rows -> matrix for heatmap in View Output
+      return { type: 'matrix', values: allInputs };
     }
     
     // Binary operations - output matches input shape
-    // If both inputs are scalars, output is scalar; otherwise tensor
     case 'add': {
-      const inputA = inputs['a'];
-      const inputB = inputs['b'];
+      const { isScalar: isScalarA, value: scalarAValue } = getScalarLike(inputs['a']);
+      const { isScalar: isScalarB, value: scalarBValue } = getScalarLike(inputs['b']);
       
       // Both scalars -> scalar result
-      if (inputA?.type === 'scalar' && inputB?.type === 'scalar') {
-        return { type: 'scalar', value: (inputA.value || 0) + (inputB.value || 0) };
+      if (isScalarA && isScalarB && scalarAValue !== null && scalarBValue !== null) {
+        return { type: 'scalar', value: scalarAValue + scalarBValue };
       }
       
       // At least one tensor -> tensor result
@@ -512,19 +574,41 @@ function computeNodePreview(
       const aExpanded = a.length === 1 ? Array(maxLen).fill(a[0]) : a;
       const bExpanded = b.length === 1 ? Array(maxLen).fill(b[0]) : b;
       const values = aExpanded.map((v, i) => v + (bExpanded[i] ?? 0));
+      if (values.length === 1) {
+        return { type: 'scalar', value: values[0] };
+      }
       return { type: 'tensor', values };
     }
     
     case 'subtract': {
-      const inputA = inputs['a'];
-      const inputB = inputs['b'];
-      
-      // Both scalars -> scalar result
-      if (inputA?.type === 'scalar' && inputB?.type === 'scalar') {
-        return { type: 'scalar', value: (inputA.value || 0) - (inputB.value || 0) };
+      const { isScalar: isScalarA, value: scalarAValue } = getScalarLike(inputs['a']);
+      const { isScalar: isScalarB, value: scalarBValue } = getScalarLike(inputs['b']);
+      const subtractMode = data.subtractMode || 'difference';
+
+      if (subtractMode === 'ratio') {
+        if (isScalarA && isScalarB && scalarAValue !== null && scalarBValue !== null) {
+          return { type: 'scalar', value: scalarBValue !== 0 ? (scalarAValue - scalarBValue) / scalarBValue : 0 };
+        }
+        const a = getTensorValues('a');
+        const b = getTensorValues('b');
+        if (a.length === 0 && b.length === 0) return { type: 'scalar', value: 0 };
+        const maxLen = Math.max(a.length, b.length);
+        const aExpanded = a.length === 1 ? Array(maxLen).fill(a[0]) : a;
+        const bExpanded = b.length === 1 ? Array(maxLen).fill(b[0]) : b;
+        const values = aExpanded.map((v, i) => {
+          const den = bExpanded[i] ?? 0;
+          return den !== 0 ? (v - den) / den : 0;
+        });
+        if (values.length === 1) {
+          return { type: 'scalar', value: values[0] };
+        }
+        return { type: 'tensor', values };
       }
-      
-      // At least one tensor -> tensor result
+
+      // Difference: a - b
+      if (isScalarA && isScalarB && scalarAValue !== null && scalarBValue !== null) {
+        return { type: 'scalar', value: scalarAValue - scalarBValue };
+      }
       const a = getTensorValues('a');
       const b = getTensorValues('b');
       if (a.length === 0 && b.length === 0) return { type: 'scalar', value: 0 };
@@ -532,16 +616,19 @@ function computeNodePreview(
       const aExpanded = a.length === 1 ? Array(maxLen).fill(a[0]) : a;
       const bExpanded = b.length === 1 ? Array(maxLen).fill(b[0]) : b;
       const values = aExpanded.map((v, i) => v - (bExpanded[i] ?? 0));
+      if (values.length === 1) {
+        return { type: 'scalar', value: values[0] };
+      }
       return { type: 'tensor', values };
     }
     
     case 'multiply': {
-      const inputA = inputs['a'];
-      const inputB = inputs['b'];
+      const { isScalar: isScalarA, value: scalarAValue } = getScalarLike(inputs['a']);
+      const { isScalar: isScalarB, value: scalarBValue } = getScalarLike(inputs['b']);
       
       // Both scalars -> scalar result
-      if (inputA?.type === 'scalar' && inputB?.type === 'scalar') {
-        return { type: 'scalar', value: (inputA.value || 0) * (inputB.value || 0) };
+      if (isScalarA && isScalarB && scalarAValue !== null && scalarBValue !== null) {
+        return { type: 'scalar', value: scalarAValue * scalarBValue };
       }
       
       // At least one tensor -> tensor result
@@ -552,17 +639,20 @@ function computeNodePreview(
       const aExpanded = a.length === 1 ? Array(maxLen).fill(a[0]) : a;
       const bExpanded = b.length === 1 ? Array(maxLen).fill(b[0]) : b;
       const values = aExpanded.map((v, i) => v * (bExpanded[i] ?? 1));
+      if (values.length === 1) {
+        return { type: 'scalar', value: values[0] };
+      }
       return { type: 'tensor', values };
     }
     
     case 'divide': {
-      const inputA = inputs['a'];
-      const inputB = inputs['b'];
+      const { isScalar: isScalarA, value: scalarAValue } = getScalarLike(inputs['a']);
+      const { isScalar: isScalarB, value: scalarBValue } = getScalarLike(inputs['b']);
       
       // Both scalars -> scalar result
-      if (inputA?.type === 'scalar' && inputB?.type === 'scalar') {
-        const divisor = inputB.value || 1;
-        return { type: 'scalar', value: (inputA.value || 0) / divisor };
+      if (isScalarA && isScalarB && scalarAValue !== null && scalarBValue !== null) {
+        const divisor = scalarBValue || 1;
+        return { type: 'scalar', value: scalarAValue / divisor };
       }
       
       // At least one tensor -> tensor result
@@ -573,6 +663,9 @@ function computeNodePreview(
       const aExpanded = a.length === 1 ? Array(maxLen).fill(a[0]) : a;
       const bExpanded = b.length === 1 ? Array(maxLen).fill(b[0]) : b;
       const values = aExpanded.map((v, i) => v / (bExpanded[i] || 1));
+      if (values.length === 1) {
+        return { type: 'scalar', value: values[0] };
+      }
       return { type: 'tensor', values };
     }
     
@@ -643,17 +736,108 @@ function computeNodePreview(
     
     case 'clip': {
       const input = getTensorValues('input');
-      const minVal = data.min ?? -1;
-      const maxVal = data.max ?? 1;
+      const minVal = getDataNumber(data, 'min', -1);
+      const maxVal = getDataNumber(data, 'max', 1);
       return { type: 'tensor', values: input.map(v => Math.max(minVal, Math.min(maxVal, v))) };
     }
     
-    // Sign function: 1 if > 0, -1 otherwise
-    case 'sign': {
+    // Round - nearest, up, or down
+    case 'round': {
       const input = getTensorValues('input');
-      return { type: 'tensor', values: input.map(v => v > 0 ? 1 : -1) };
+      const decimals = getDataNumber(data, 'decimals', 0);
+      const method = data.roundMethod || 'nearest';
+      const factor = Math.pow(10, decimals);
+      const values = input.map(v => {
+        const scaled = v * factor;
+        let rounded: number;
+        if (method === 'up') rounded = Math.ceil(scaled);
+        else if (method === 'down') rounded = Math.floor(scaled);
+        else rounded = Math.round(scaled);
+        return rounded / factor;
+      });
+      return { type: 'tensor', values };
     }
     
+    // Abs - absolute value
+    case 'abs': {
+      const input = getTensorValues('input');
+      return { type: 'tensor', values: input.map(v => Math.abs(v)) };
+    }
+    // Parity Check: SCALAR CATEGORY - always coerce inputs to scalars
+    case 'parity_check': {
+      const aVal = getScalarValue('a');
+      const bVal = getScalarValue('b');
+      
+      const parity = (x: number, y: number) => {
+        if (x === 0 || y === 0) return 0;
+        return (x > 0 && y > 0) || (x < 0 && y < 0) ? 1 : -1;
+      };
+      const alignedSign = (x: number, y: number) => {
+        if (x === 0 || y === 0) return 0;
+        if ((x > 0 && y > 0) || (x < 0 && y < 0)) return x > 0 ? 1 : -1;
+        return 0;
+      };
+      
+      const p = parity(aVal, bVal);
+      const a = alignedSign(aVal, bVal);
+      return { type: 'scalars', values: [p, a] };
+    }
+    // Flip: parity (-1↔1, 0→0) or boolean (0↔1)
+    case 'flip': {
+      const v = getScalarValue('input');
+      const flipMode = data.flipMode || 'parity';
+      let out: number;
+      if (flipMode === 'boolean') {
+        out = v === 0 ? 1 : 0;  // 0↔1
+      } else {
+        if (v === 0) out = 0;
+        else if (v === 1 || v === -1) out = -v;  // -1↔1
+        else out = v > 0 ? -1 : 1;  // other positive → -1, other negative → 1
+      }
+      return { type: 'scalar', value: out };
+    }
+    // Parity Split: positive→first output, negative→second output
+    case 'parity_split': {
+      const v = getScalarValue('input');
+      const pos = v > 0 ? v : 0;
+      const neg = v < 0 ? v : 0;
+      return { type: 'scalars', values: [pos, neg] };
+    }
+    // Compare: a op b → 1 or 0
+    case 'compare': {
+      const a = getScalarValue('a');
+      const b = getScalarValue('b');
+      const op = data.compareOp || 'gt';
+      let result: number;
+      switch (op) {
+        case 'gt': result = a > b ? 1 : 0; break;
+        case 'lt': result = a < b ? 1 : 0; break;
+        case 'gte': result = a >= b ? 1 : 0; break;
+        case 'lte': result = a <= b ? 1 : 0; break;
+        case 'eq': result = a === b ? 1 : 0; break;
+        case 'neq': result = a !== b ? 1 : 0; break;
+        default: result = 0;
+      }
+      return { type: 'scalar', value: result };
+    }
+    // Crossover: detects when fast crosses slow (uses prev values - demo shows 0)
+    case 'crossover': {
+      // In preview we don't have state, so just show 0
+      return { type: 'scalars', values: [0, 0] };
+    }
+    // Threshold: input > threshold → 1 or 0
+    case 'threshold': {
+      const v = getScalarValue('input');
+      const t = getDataNumber(data, 'threshold', 0);
+      const mode = data.mode || 'above';
+      const result = mode === 'below' ? (v < t ? 1 : 0) : (v > t ? 1 : 0);
+      return { type: 'scalar', value: result };
+    }
+    // Sign function: 1 if > 0, 0 if = 0, -1 if < 0
+    case 'sign': {
+      const input = getTensorValues('input');
+      return { type: 'tensor', values: input.map(v => v > 0 ? 1 : (v < 0 ? -1 : 0)) };
+    }
     // Sin function
     case 'sin': {
       const input = getTensorValues('input');
@@ -669,7 +853,7 @@ function computeNodePreview(
     // Rolling operations - output tensor
     case 'rolling_mean': {
       const input = getTensorValues('input');
-      const window = data.window || 10;
+      const window = getDataNumber(data, 'window', 10);
       const values = input.map((_, i, arr) => {
         const start = Math.max(0, i - window + 1);
         const slice = arr.slice(start, i + 1);
@@ -680,7 +864,7 @@ function computeNodePreview(
     
     case 'rolling_std': {
       const input = getTensorValues('input');
-      const window = data.window || 10;
+      const window = getDataNumber(data, 'window', 10);
       const values = input.map((_, i, arr) => {
         const start = Math.max(0, i - window + 1);
         const slice = arr.slice(start, i + 1);
@@ -690,10 +874,23 @@ function computeNodePreview(
       return { type: 'tensor', values };
     }
     
+    // EMA - exponential moving average
+    case 'ema': {
+      const input = getTensorValues('input');
+      const span = getDataNumber(data, 'span', 10);
+      if (input.length === 0) return { type: 'tensor', values: [] };
+      const alpha = 2 / (span + 1);
+      const values: number[] = [input[0]];
+      for (let i = 1; i < input.length; i++) {
+        values.push(alpha * input[i] + (1 - alpha) * values[i - 1]);
+      }
+      return { type: 'tensor', values };
+    }
+    
     // Shift - shift back n positions
     case 'shift': {
       const input = getTensorValues('input');
-      const n = data.n || 1;
+      const n = getDataNumber(data, 'n', 1);
       const fillMode = data.fillMode || 'none';
       
       if (input.length === 0) return { type: 'tensor', values: [] };
@@ -720,7 +917,7 @@ function computeNodePreview(
     // Shift-Diff - difference between x(i) and x(i-n), no padding (shorter output)
     case 'shift_diff': {
       const input = getTensorValues('input');
-      const n = data.n || 1;
+      const n = getDataNumber(data, 'n', 1);
       const diffMode = data.diffMode || 'raw';
       
       if (input.length <= n) return { type: 'tensor', values: [] };
@@ -733,12 +930,12 @@ function computeNodePreview(
         
         switch (diffMode) {
           case 'raw':
-            // x(i) - x(i-n)
             values.push(current - previous);
             break;
           case 'percent':
-            // (x(i) - x(i-n)) / x(i-n) * 100
-            values.push(previous !== 0 ? ((current - previous) / previous) * 100 : 0);
+          case 'ratio':
+            // (x(i) - x(i-n)) / x(i-n), no * 100
+            values.push(previous !== 0 ? (current - previous) / previous : 0);
             break;
           case 'log':
             // log(x(i)) - log(x(i-n))
@@ -755,16 +952,11 @@ function computeNodePreview(
       return { type: 'tensor', values };
     }
     
-    // 1D Convolution with custom kernel
+    // 1D Convolution with kernel from input (vector)
     case 'conv1d_custom': {
       const input = getTensorValues('input');
-      const kernelStr = data.kernel || '0.25, 0.5, 0.25';
+      const kernel = getTensorValues('kernel');
       const padding = data.padding || 'valid';
-      
-      // Parse kernel from comma-separated string
-      const kernel = kernelStr.split(',')
-        .map((s: string) => parseFloat(s.trim()))
-        .filter((n: number) => !isNaN(n));
       
       if (kernel.length === 0 || input.length < kernel.length) {
         return { type: 'tensor', values: [] };
@@ -773,7 +965,6 @@ function computeNodePreview(
       const values: number[] = [];
       
       if (padding === 'same') {
-        // 'same' padding - output same length as input
         const padSize = Math.floor(kernel.length / 2);
         for (let i = 0; i < input.length; i++) {
           let sum = 0;
@@ -785,7 +976,6 @@ function computeNodePreview(
           values.push(sum);
         }
       } else {
-        // 'valid' padding - no padding, output shorter
         for (let i = 0; i <= input.length - kernel.length; i++) {
           let sum = 0;
           for (let k = 0; k < kernel.length; k++) {
@@ -801,7 +991,7 @@ function computeNodePreview(
     // RSI indicator - outputs tensor [0-100]
     case 'rsi': {
       const input = getTensorValues('input');
-      const period = data.period || 14;
+      const period = getDataNumber(data, 'period', 14);
       if (input.length < 2) return { type: 'tensor', values: [] };
       
       // Calculate price changes
@@ -846,7 +1036,7 @@ function computeNodePreview(
     // Bollinger Bands - outputs tensor (middle band for simplicity)
     case 'bollinger': {
       const input = getTensorValues('input');
-      const period = data.period || 20;
+      const period = getDataNumber(data, 'period', 20);
       
       // Calculate middle band (SMA)
       const values = input.map((_, i, arr) => {
@@ -916,6 +1106,13 @@ function computeNodePreview(
       return { type: 'scalar', value: getScalarValue('input') };
     }
     
+    // View Output - pass-through (meter/debugger: sparkline, scalar, or heatmap)
+    case 'view_output': {
+      const input = inputs['input'];
+      if (!input) return { type: 'tensor', values: [] };
+      return input;
+    }
+    
     default:
       return { type: 'tensor', values: [] };
   }
@@ -940,7 +1137,8 @@ function computeAllPreviews(
   // Build adjacency and in-degree
   const inDegree = new Map<string, number>();
   const adjacency = new Map<string, string[]>();
-  const incomingEdges = new Map<string, Map<string, string>>(); // nodeId -> (handle -> sourceNodeId)
+  // nodeId -> (targetHandle -> { sourceId, sourceHandle })
+  const incomingEdges = new Map<string, Map<string, { sourceId: string; sourceHandle?: string }>>();
   
   nodes.forEach(n => {
     inDegree.set(n.id, 0);
@@ -952,7 +1150,10 @@ function computeAllPreviews(
     if (nodeMap.has(edge.source) && nodeMap.has(edge.target)) {
       adjacency.get(edge.source)!.push(edge.target);
       inDegree.set(edge.target, (inDegree.get(edge.target) || 0) + 1);
-      incomingEdges.get(edge.target)!.set(edge.targetHandle || 'input', edge.source);
+      incomingEdges.get(edge.target)!.set(edge.targetHandle || 'input', {
+        sourceId: edge.source,
+        sourceHandle: edge.sourceHandle || undefined,
+      });
     }
   });
   
@@ -986,11 +1187,22 @@ function computeAllPreviews(
     const inputShapes: Record<string, Shape | null> = {};
     const incoming = incomingEdges.get(nodeId);
     if (incoming) {
-      incoming.forEach((sourceId, handle) => {
-        if (previews[sourceId]) {
-          inputPreviews[handle] = previews[sourceId];
+      incoming.forEach(({ sourceId, sourceHandle }, targetHandle) => {
+        let srcPreview = previews[sourceId];
+        if (srcPreview) {
+          // For multi-output nodes: extract the specific output when sourceHandle is set
+          const sourceNode = nodeMap.get(sourceId);
+          const sourceType = sourceNode?.type || 'unknown';
+          const sourceDef = NODE_TYPES[sourceType as keyof typeof NODE_TYPES];
+          if (sourceDef?.outputs?.length > 1 && sourceHandle) {
+            const outIndex = sourceDef.outputs.findIndex((o: { name: string }) => o.name === sourceHandle);
+            if (outIndex >= 0 && srcPreview.type === 'scalars' && srcPreview.values[outIndex] !== undefined) {
+              srcPreview = { type: 'scalar', value: srcPreview.values[outIndex] };
+            }
+          }
+          inputPreviews[targetHandle] = srcPreview;
         }
-        inputShapes[handle] = shapes[sourceId] || null;
+        inputShapes[targetHandle] = shapes[sourceId] || null;
       });
     }
     
@@ -1111,7 +1323,9 @@ function Toolbox({ onAddNode }: { onAddNode: (type: string) => void }) {
               {categoryLabel}
             </div>
             <div className="p-1 space-y-1">
-              {nodes.map(node => (
+              {nodes
+                .filter(n => n.type !== 'custom_state_t' && n.type !== 'custom_state_t1')
+                .map(node => (
                 <button
                   key={node.type}
                   onClick={() => onAddNode(node.type)}
@@ -1156,6 +1370,12 @@ function PropertiesPanel({
     onUpdateNode(selectedNode.id, { ...data, [key]: value });
   };
   
+  // Display value for numeric inputs (allows empty and '-' while typing)
+  const numVal = (key: string, fallback: string = '') => {
+    const v = data[key];
+    return v !== undefined && v !== null ? String(v) : fallback;
+  };
+  
   return (
     <div className="w-64 bg-[var(--bg-secondary)] border-l border-[var(--border-color)] overflow-y-auto">
       <div className="p-3 border-b border-[var(--border-color)]">
@@ -1175,6 +1395,21 @@ function PropertiesPanel({
           />
         </div>
         
+        {/* Sparkline Type - show for nodes that output tensors */}
+        {!['output', 'agent_state', 'timestamp'].includes(nodeType) && (
+          <div>
+            <label className="block text-xs text-[var(--text-secondary)] mb-1">Sparkline Type</label>
+            <select
+              value={data.sparklineType || 'line'}
+              onChange={(e) => handleChange('sparklineType', e.target.value)}
+              className="w-full text-sm"
+            >
+              <option value="line">Line Chart</option>
+              <option value="bar">Bar Chart</option>
+            </select>
+          </div>
+        )}
+        
         {/* Signal-specific: signal selector and frequency */}
         {nodeType === 'signal' && (
           <>
@@ -1183,11 +1418,14 @@ function PropertiesPanel({
               <select
                 value={data.signalId || ''}
                 onChange={(e) => {
-                  const signal = signals.find(s => s.id === e.target.value);
-                  handleChange('signalId', e.target.value);
+                  const newSignalId = e.target.value;
+                  const signal = signals.find(s => s.id === newSignalId);
+                  // Update both signalId and frequency in a single call to avoid stale data issues
+                  const updates: Record<string, any> = { signalId: newSignalId };
                   if (signal?.model_freq) {
-                    handleChange('frequency', signal.model_freq);
+                    updates.frequency = signal.model_freq;
                   }
+                  onUpdateNode(selectedNode.id, { ...data, ...updates });
                 }}
                 className="w-full text-sm"
               >
@@ -1221,9 +1459,10 @@ function PropertiesPanel({
             <div>
               <label className="block text-xs text-[var(--text-secondary)] mb-1">Value</label>
               <input
-                type="number"
-                value={data.value ?? 0}
-                onChange={(e) => handleChange('value', parseFloat(e.target.value) || 0)}
+                type="text"
+                inputMode="decimal"
+                value={numVal('value', '')}
+                onChange={(e) => handleChange('value', e.target.value)}
                 className="w-full text-sm"
               />
             </div>
@@ -1281,19 +1520,20 @@ function PropertiesPanel({
             <div>
               <label className="block text-xs text-[var(--text-secondary)] mb-1">N (number of elements)</label>
               <input
-                type="number"
-                value={data.n || 10}
-                onChange={(e) => handleChange('n', parseInt(e.target.value) || 10)}
+                type="text"
+                inputMode="numeric"
+                value={numVal('n', '10')}
+                onChange={(e) => handleChange('n', e.target.value)}
                 className="w-full text-sm"
-                min={1}
               />
             </div>
             <div>
               <label className="block text-xs text-[var(--text-secondary)] mb-1">Start</label>
               <input
-                type="number"
-                value={data.start ?? 0}
-                onChange={(e) => handleChange('start', parseFloat(e.target.value) || 0)}
+                type="text"
+                inputMode="decimal"
+                value={numVal('start', '')}
+                onChange={(e) => handleChange('start', e.target.value)}
                 className="w-full text-sm"
               />
             </div>
@@ -1312,9 +1552,10 @@ function PropertiesPanel({
               <div>
                 <label className="block text-xs text-[var(--text-secondary)] mb-1">End</label>
                 <input
-                  type="number"
-                  value={data.end ?? 10}
-                  onChange={(e) => handleChange('end', parseFloat(e.target.value) || 10)}
+                  type="text"
+                  inputMode="decimal"
+                  value={numVal('end', '10')}
+                  onChange={(e) => handleChange('end', e.target.value)}
                   className="w-full text-sm"
                 />
               </div>
@@ -1322,9 +1563,10 @@ function PropertiesPanel({
               <div>
                 <label className="block text-xs text-[var(--text-secondary)] mb-1">Step</label>
                 <input
-                  type="number"
-                  value={data.step ?? 1}
-                  onChange={(e) => handleChange('step', parseFloat(e.target.value) || 1)}
+                  type="text"
+                  inputMode="decimal"
+                  value={numVal('step', '1')}
+                  onChange={(e) => handleChange('step', e.target.value)}
                   className="w-full text-sm"
                 />
               </div>
@@ -1338,18 +1580,20 @@ function PropertiesPanel({
             <div>
               <label className="block text-xs text-[var(--text-secondary)] mb-1">Demo Shares Held</label>
               <input
-                type="number"
-                value={data.demoShares ?? 10}
-                onChange={(e) => handleChange('demoShares', parseInt(e.target.value) || 0)}
+                type="text"
+                inputMode="numeric"
+                value={numVal('demoShares', '10')}
+                onChange={(e) => handleChange('demoShares', e.target.value)}
                 className="w-full text-sm"
               />
             </div>
             <div>
               <label className="block text-xs text-[var(--text-secondary)] mb-1">Demo Total Equity</label>
               <input
-                type="number"
-                value={data.demoEquity ?? 100000}
-                onChange={(e) => handleChange('demoEquity', parseFloat(e.target.value) || 100000)}
+                type="text"
+                inputMode="decimal"
+                value={numVal('demoEquity', '100000')}
+                onChange={(e) => handleChange('demoEquity', e.target.value)}
                 className="w-full text-sm"
               />
             </div>
@@ -1365,26 +1609,27 @@ function PropertiesPanel({
             <div>
               <label className="block text-xs text-[var(--text-secondary)] mb-1">History Length</label>
               <input
-                type="number"
-                value={data.historyLength ?? 50}
-                onChange={(e) => handleChange('historyLength', parseInt(e.target.value) || 50)}
+                type="text"
+                inputMode="numeric"
+                value={numVal('historyLength', '50')}
+                onChange={(e) => handleChange('historyLength', e.target.value)}
                 className="w-full text-sm"
-                min={1}
               />
             </div>
             <div>
               <label className="block text-xs text-[var(--text-secondary)] mb-1">Demo Equity</label>
               <input
-                type="number"
-                value={data.demoEquity ?? 100000}
-                onChange={(e) => handleChange('demoEquity', parseFloat(e.target.value) || 100000)}
+                type="text"
+                inputMode="decimal"
+                value={numVal('demoEquity', '100000')}
+                onChange={(e) => handleChange('demoEquity', e.target.value)}
                 className="w-full text-sm"
               />
             </div>
           </>
         )}
         
-        {/* Custom State */}
+        {/* Custom State (legacy single block) */}
         {nodeType === 'custom_state' && (
           <>
             <div>
@@ -1412,6 +1657,123 @@ function PropertiesPanel({
             </div>
           </>
         )}
+        {/* Custom State _t and _(t+1) pair */}
+        {(nodeType === 'custom_state_t' || nodeType === 'custom_state_t1') && (
+          <>
+            <div>
+              <label className="block text-xs text-[var(--text-secondary)] mb-1">State Name (synced with pair)</label>
+              <input
+                type="text"
+                value={data.stateName || 'my_state'}
+                onChange={(e) => handleChange('stateName', e.target.value)}
+                className="w-full text-sm font-mono"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-[var(--text-secondary)] mb-1">Default Value</label>
+              <input
+                type="text"
+                value={data.defaultValue || '0'}
+                onChange={(e) => handleChange('defaultValue', e.target.value)}
+                className="w-full text-sm font-mono"
+                placeholder="0 or 1,2,3 for vector"
+              />
+            </div>
+            <div className="text-[10px] text-[var(--text-secondary)] mt-2">
+              {nodeType === 'custom_state_t' ? 'Green: reads current state (input).' : 'Red: connect value here to update state for next step (output).'}
+              Rename or delete one and the pair updates together.
+            </div>
+          </>
+        )}
+        {/* Subtract mode */}
+        {nodeType === 'subtract' && (
+          <div>
+            <label className="block text-xs text-[var(--text-secondary)] mb-1">Mode</label>
+            <select
+              value={data.subtractMode || 'difference'}
+              onChange={(e) => handleChange('subtractMode', e.target.value)}
+              className="w-full text-sm"
+            >
+              <option value="difference">Difference: a - b</option>
+              <option value="ratio">Ratio: (a - b) / b</option>
+            </select>
+          </div>
+        )}
+        
+        {/* Flip-specific */}
+        {nodeType === 'flip' && (
+          <div>
+            <label className="block text-xs text-[var(--text-secondary)] mb-1">Flip Mode</label>
+            <select
+              value={data.flipMode || 'parity'}
+              onChange={(e) => handleChange('flipMode', e.target.value)}
+              className="w-full text-sm"
+            >
+              <option value="parity">Parity: -1↔1, 0→0</option>
+              <option value="boolean">Boolean: 0↔1</option>
+            </select>
+          </div>
+        )}
+        
+        {/* Compare-specific */}
+        {nodeType === 'compare' && (
+          <div>
+            <label className="block text-xs text-[var(--text-secondary)] mb-1">Comparison Operator</label>
+            <select
+              value={data.compareOp || 'gt'}
+              onChange={(e) => handleChange('compareOp', e.target.value)}
+              className="w-full text-sm"
+            >
+              <option value="gt">a {'>'} b (greater than)</option>
+              <option value="lt">a {'<'} b (less than)</option>
+              <option value="gte">a ≥ b (greater or equal)</option>
+              <option value="lte">a ≤ b (less or equal)</option>
+              <option value="eq">a = b (equal)</option>
+              <option value="neq">a ≠ b (not equal)</option>
+            </select>
+          </div>
+        )}
+        
+        {/* Threshold-specific */}
+        {nodeType === 'threshold' && (
+          <>
+            <div>
+              <label className="block text-xs text-[var(--text-secondary)] mb-1">Threshold Value</label>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={numVal('threshold', '0')}
+                onChange={(e) => handleChange('threshold', e.target.value)}
+                className="w-full text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-[var(--text-secondary)] mb-1">Mode</label>
+              <select
+                value={data.mode || 'above'}
+                onChange={(e) => handleChange('mode', e.target.value)}
+                className="w-full text-sm"
+              >
+                <option value="above">Above: input {'>'} threshold → 1</option>
+                <option value="below">Below: input {'<'} threshold → 1</option>
+              </select>
+            </div>
+          </>
+        )}
+        
+        {/* EMA-specific */}
+        {nodeType === 'ema' && (
+          <div>
+            <label className="block text-xs text-[var(--text-secondary)] mb-1">Span (periods)</label>
+            <input
+              type="text"
+              inputMode="numeric"
+              value={numVal('span', '10')}
+              onChange={(e) => handleChange('span', e.target.value)}
+              className="w-full text-sm"
+            />
+          </div>
+        )}
         
         {/* Slice-specific */}
         {nodeType === 'slice' && (
@@ -1419,25 +1781,25 @@ function PropertiesPanel({
             <div>
               <label className="block text-xs text-[var(--text-secondary)] mb-1">From last N (start)</label>
               <input
-                type="number"
-                value={data.n || 10}
-                onChange={(e) => handleChange('n', parseInt(e.target.value) || 10)}
+                type="text"
+                inputMode="numeric"
+                value={numVal('n', '10')}
+                onChange={(e) => handleChange('n', e.target.value)}
                 className="w-full text-sm"
-                min={1}
               />
             </div>
             <div>
               <label className="block text-xs text-[var(--text-secondary)] mb-1">To last M (end, 0=end)</label>
               <input
-                type="number"
-                value={data.m ?? 0}
-                onChange={(e) => handleChange('m', parseInt(e.target.value) || 0)}
+                type="text"
+                inputMode="numeric"
+                value={numVal('m', '0')}
+                onChange={(e) => handleChange('m', e.target.value)}
                 className="w-full text-sm"
-                min={0}
               />
             </div>
             <div className="text-xs text-[var(--text-secondary)] mt-1">
-              Window: [-{data.n || 10} : {(data.m ?? 0) === 0 ? 'end' : `-${data.m}`}]
+              Window: [-{getDataNumber(data, 'n', 10)} : {getDataNumber(data, 'm', 0) === 0 ? 'end' : `-${getDataNumber(data, 'm', 0)}`}]
             </div>
           </>
         )}
@@ -1448,20 +1810,50 @@ function PropertiesPanel({
             <div>
               <label className="block text-xs text-[var(--text-secondary)] mb-1">Min</label>
               <input
-                type="number"
-                value={data.min ?? -1}
-                onChange={(e) => handleChange('min', parseFloat(e.target.value))}
+                type="text"
+                inputMode="decimal"
+                value={numVal('min', '-1')}
+                onChange={(e) => handleChange('min', e.target.value)}
                 className="w-full text-sm"
               />
             </div>
             <div>
               <label className="block text-xs text-[var(--text-secondary)] mb-1">Max</label>
               <input
-                type="number"
-                value={data.max ?? 1}
-                onChange={(e) => handleChange('max', parseFloat(e.target.value))}
+                type="text"
+                inputMode="decimal"
+                value={numVal('max', '1')}
+                onChange={(e) => handleChange('max', e.target.value)}
                 className="w-full text-sm"
               />
+            </div>
+          </>
+        )}
+        
+        {/* Round-specific */}
+        {nodeType === 'round' && (
+          <>
+            <div>
+              <label className="block text-xs text-[var(--text-secondary)] mb-1">Decimals</label>
+              <input
+                type="text"
+                inputMode="numeric"
+                value={numVal('decimals', '0')}
+                onChange={(e) => handleChange('decimals', e.target.value)}
+                className="w-full text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-[var(--text-secondary)] mb-1">Round Method</label>
+              <select
+                value={data.roundMethod || 'nearest'}
+                onChange={(e) => handleChange('roundMethod', e.target.value)}
+                className="w-full text-sm"
+              >
+                <option value="nearest">Round to nearest (default)</option>
+                <option value="up">Round up (ceil)</option>
+                <option value="down">Round down (floor)</option>
+              </select>
             </div>
           </>
         )}
@@ -1471,11 +1863,11 @@ function PropertiesPanel({
           <div>
             <label className="block text-xs text-[var(--text-secondary)] mb-1">Window</label>
             <input
-              type="number"
-              value={data.window || 10}
-              onChange={(e) => handleChange('window', parseInt(e.target.value) || 10)}
+              type="text"
+              inputMode="numeric"
+              value={numVal('window', '10')}
+              onChange={(e) => handleChange('window', e.target.value)}
               className="w-full text-sm"
-              min={1}
             />
           </div>
         )}
@@ -1486,11 +1878,11 @@ function PropertiesPanel({
             <div>
               <label className="block text-xs text-[var(--text-secondary)] mb-1">Shift (n positions)</label>
               <input
-                type="number"
-                value={data.n || 1}
-                onChange={(e) => handleChange('n', parseInt(e.target.value) || 1)}
+                type="text"
+                inputMode="numeric"
+                value={numVal('n', '1')}
+                onChange={(e) => handleChange('n', e.target.value)}
                 className="w-full text-sm"
-                min={1}
               />
             </div>
             <div>
@@ -1514,11 +1906,11 @@ function PropertiesPanel({
             <div>
               <label className="block text-xs text-[var(--text-secondary)] mb-1">Lag (n periods)</label>
               <input
-                type="number"
-                value={data.n || 1}
-                onChange={(e) => handleChange('n', parseInt(e.target.value) || 1)}
+                type="text"
+                inputMode="numeric"
+                value={numVal('n', '1')}
+                onChange={(e) => handleChange('n', e.target.value)}
                 className="w-full text-sm"
-                min={1}
               />
             </div>
             <div>
@@ -1529,7 +1921,7 @@ function PropertiesPanel({
                 className="w-full text-sm"
               >
                 <option value="raw">Raw: x(i) - x(i-n)</option>
-                <option value="percent">Percent: (x(i)-x(i-n))/x(i-n) × 100</option>
+                <option value="ratio">Ratio: (x(i)-x(i-n))/x(i-n)</option>
                 <option value="log">Log: log(x(i)) - log(x(i-n))</option>
                 <option value="cagr">CAGR: (x(i)/x(i-n))^(1/n) - 1</option>
               </select>
@@ -1539,32 +1931,20 @@ function PropertiesPanel({
         
         {/* Conv1D Custom */}
         {nodeType === 'conv1d_custom' && (
-          <>
-            <div>
-              <label className="block text-xs text-[var(--text-secondary)] mb-1">Kernel (comma-separated)</label>
-              <input
-                type="text"
-                value={data.kernel || '0.25, 0.5, 0.25'}
-                onChange={(e) => handleChange('kernel', e.target.value)}
-                className="w-full text-sm font-mono"
-                placeholder="0.25, 0.5, 0.25"
-              />
-              <div className="text-[10px] text-[var(--text-secondary)] mt-1">
-                e.g., "0.25, 0.5, 0.25" for smoothing
-              </div>
+          <div>
+            <label className="block text-xs text-[var(--text-secondary)] mb-1">Padding Mode</label>
+            <select
+              value={data.padding || 'valid'}
+              onChange={(e) => handleChange('padding', e.target.value)}
+              className="w-full text-sm"
+            >
+              <option value="valid">Valid (no padding, shorter output)</option>
+              <option value="same">Same (preserve length)</option>
+            </select>
+            <div className="text-[10px] text-[var(--text-secondary)] mt-1">
+              Connect a 1D vector to the <strong>kernel</strong> input for the convolution kernel.
             </div>
-            <div>
-              <label className="block text-xs text-[var(--text-secondary)] mb-1">Padding Mode</label>
-              <select
-                value={data.padding || 'valid'}
-                onChange={(e) => handleChange('padding', e.target.value)}
-                className="w-full text-sm"
-              >
-                <option value="valid">Valid (no padding, shorter output)</option>
-                <option value="same">Same (preserve length)</option>
-              </select>
-            </div>
-          </>
+          </div>
         )}
         
         {/* RSI */}
@@ -1572,11 +1952,11 @@ function PropertiesPanel({
           <div>
             <label className="block text-xs text-[var(--text-secondary)] mb-1">Period</label>
             <input
-              type="number"
-              value={data.period || 14}
-              onChange={(e) => handleChange('period', parseInt(e.target.value) || 14)}
+              type="text"
+              inputMode="numeric"
+              value={numVal('period', '14')}
+              onChange={(e) => handleChange('period', e.target.value)}
               className="w-full text-sm"
-              min={1}
             />
           </div>
         )}
@@ -1587,31 +1967,31 @@ function PropertiesPanel({
             <div>
               <label className="block text-xs text-[var(--text-secondary)] mb-1">Fast Period</label>
               <input
-                type="number"
-                value={data.fastPeriod || 12}
-                onChange={(e) => handleChange('fastPeriod', parseInt(e.target.value) || 12)}
+                type="text"
+                inputMode="numeric"
+                value={numVal('fastPeriod', '12')}
+                onChange={(e) => handleChange('fastPeriod', e.target.value)}
                 className="w-full text-sm"
-                min={1}
               />
             </div>
             <div>
               <label className="block text-xs text-[var(--text-secondary)] mb-1">Slow Period</label>
               <input
-                type="number"
-                value={data.slowPeriod || 26}
-                onChange={(e) => handleChange('slowPeriod', parseInt(e.target.value) || 26)}
+                type="text"
+                inputMode="numeric"
+                value={numVal('slowPeriod', '26')}
+                onChange={(e) => handleChange('slowPeriod', e.target.value)}
                 className="w-full text-sm"
-                min={1}
               />
             </div>
             <div>
               <label className="block text-xs text-[var(--text-secondary)] mb-1">Signal Period</label>
               <input
-                type="number"
-                value={data.signalPeriod || 9}
-                onChange={(e) => handleChange('signalPeriod', parseInt(e.target.value) || 9)}
+                type="text"
+                inputMode="numeric"
+                value={numVal('signalPeriod', '9')}
+                onChange={(e) => handleChange('signalPeriod', e.target.value)}
                 className="w-full text-sm"
-                min={1}
               />
             </div>
           </>
@@ -1623,22 +2003,21 @@ function PropertiesPanel({
             <div>
               <label className="block text-xs text-[var(--text-secondary)] mb-1">Period</label>
               <input
-                type="number"
-                value={data.period || 20}
-                onChange={(e) => handleChange('period', parseInt(e.target.value) || 20)}
+                type="text"
+                inputMode="numeric"
+                value={numVal('period', '20')}
+                onChange={(e) => handleChange('period', e.target.value)}
                 className="w-full text-sm"
-                min={1}
               />
             </div>
             <div>
               <label className="block text-xs text-[var(--text-secondary)] mb-1">Std Dev Multiplier</label>
               <input
-                type="number"
-                value={data.stdDev || 2}
-                onChange={(e) => handleChange('stdDev', parseFloat(e.target.value) || 2)}
+                type="text"
+                inputMode="decimal"
+                value={numVal('stdDev', '2')}
+                onChange={(e) => handleChange('stdDev', e.target.value)}
                 className="w-full text-sm"
-                min={0.1}
-                step={0.1}
               />
             </div>
           </>
@@ -1664,15 +2043,14 @@ function PropertiesPanel({
           <div>
             <label className="block text-xs text-[var(--text-secondary)] mb-1">Number of Inputs</label>
             <input
-              type="number"
-              value={data.numInputs || 2}
-              onChange={(e) => handleChange('numInputs', Math.max(2, parseInt(e.target.value) || 2))}
+              type="text"
+              inputMode="numeric"
+              value={numVal('numInputs', '2')}
+              onChange={(e) => handleChange('numInputs', e.target.value)}
               className="w-full text-sm"
-              min={2}
-              max={10}
             />
             <div className="text-xs text-[var(--text-secondary)] mt-1">
-              Creates {data.numInputs || 2} input ports (input_0, input_1, ...)
+              Creates {getDataNumber(data, 'numInputs', 2)} input ports (input_0, input_1, ...)
             </div>
           </div>
         )}
@@ -1683,21 +2061,21 @@ function PropertiesPanel({
             <div>
               <label className="block text-xs text-[var(--text-secondary)] mb-1">Input Features</label>
               <input
-                type="number"
-                value={data.inFeatures || 10}
-                onChange={(e) => handleChange('inFeatures', parseInt(e.target.value) || 10)}
+                type="text"
+                inputMode="numeric"
+                value={numVal('inFeatures', '10')}
+                onChange={(e) => handleChange('inFeatures', e.target.value)}
                 className="w-full text-sm"
-                min={1}
               />
             </div>
             <div>
               <label className="block text-xs text-[var(--text-secondary)] mb-1">Output Features</label>
               <input
-                type="number"
-                value={data.outFeatures || 1}
-                onChange={(e) => handleChange('outFeatures', parseInt(e.target.value) || 1)}
+                type="text"
+                inputMode="numeric"
+                value={numVal('outFeatures', '1')}
+                onChange={(e) => handleChange('outFeatures', e.target.value)}
                 className="w-full text-sm"
-                min={1}
               />
             </div>
           </>
@@ -1709,31 +2087,31 @@ function PropertiesPanel({
             <div>
               <label className="block text-xs text-[var(--text-secondary)] mb-1">Input Size</label>
               <input
-                type="number"
-                value={data.inputSize || 10}
-                onChange={(e) => handleChange('inputSize', parseInt(e.target.value) || 10)}
+                type="text"
+                inputMode="numeric"
+                value={numVal('inputSize', '10')}
+                onChange={(e) => handleChange('inputSize', e.target.value)}
                 className="w-full text-sm"
-                min={1}
               />
             </div>
             <div>
               <label className="block text-xs text-[var(--text-secondary)] mb-1">Hidden Size</label>
               <input
-                type="number"
-                value={data.hiddenSize || 32}
-                onChange={(e) => handleChange('hiddenSize', parseInt(e.target.value) || 32)}
+                type="text"
+                inputMode="numeric"
+                value={numVal('hiddenSize', '32')}
+                onChange={(e) => handleChange('hiddenSize', e.target.value)}
                 className="w-full text-sm"
-                min={1}
               />
             </div>
             <div>
               <label className="block text-xs text-[var(--text-secondary)] mb-1">Num Layers</label>
               <input
-                type="number"
-                value={data.numLayers || 1}
-                onChange={(e) => handleChange('numLayers', parseInt(e.target.value) || 1)}
+                type="text"
+                inputMode="numeric"
+                value={numVal('numLayers', '1')}
+                onChange={(e) => handleChange('numLayers', e.target.value)}
                 className="w-full text-sm"
-                min={1}
               />
             </div>
           </>
@@ -1745,31 +2123,31 @@ function PropertiesPanel({
             <div>
               <label className="block text-xs text-[var(--text-secondary)] mb-1">In Channels</label>
               <input
-                type="number"
-                value={data.inChannels || 1}
-                onChange={(e) => handleChange('inChannels', parseInt(e.target.value) || 1)}
+                type="text"
+                inputMode="numeric"
+                value={numVal('inChannels', '1')}
+                onChange={(e) => handleChange('inChannels', e.target.value)}
                 className="w-full text-sm"
-                min={1}
               />
             </div>
             <div>
               <label className="block text-xs text-[var(--text-secondary)] mb-1">Out Channels</label>
               <input
-                type="number"
-                value={data.outChannels || 16}
-                onChange={(e) => handleChange('outChannels', parseInt(e.target.value) || 16)}
+                type="text"
+                inputMode="numeric"
+                value={numVal('outChannels', '16')}
+                onChange={(e) => handleChange('outChannels', e.target.value)}
                 className="w-full text-sm"
-                min={1}
               />
             </div>
             <div>
               <label className="block text-xs text-[var(--text-secondary)] mb-1">Kernel Size</label>
               <input
-                type="number"
-                value={data.kernelSize || 3}
-                onChange={(e) => handleChange('kernelSize', parseInt(e.target.value) || 3)}
+                type="text"
+                inputMode="numeric"
+                value={numVal('kernelSize', '3')}
+                onChange={(e) => handleChange('kernelSize', e.target.value)}
                 className="w-full text-sm"
-                min={1}
               />
             </div>
           </>
@@ -1921,10 +2299,31 @@ function DesignerCanvas({
     return () => window.removeEventListener('delete-edge', handleDeleteEdge as EventListener);
   }, []);
   
-  // Node/edge change handlers
+  // Node/edge change handlers (intercept remove to delete custom state pair)
   const onNodesChange = useCallback((changes: NodeChange[]) => {
-    setNodes((nds) => applyNodeChanges(changes, nds));
-  }, []);
+    const removeIds = new Set<string>();
+    changes.forEach((c) => {
+      if (c.type === 'remove' && c.id) {
+        const node = nodes.find((n) => n.id === c.id);
+        if (node?.type === 'custom_state_t' || node?.type === 'custom_state_t1') {
+          const pairId = node.data?.statePairId;
+          if (pairId) {
+            const pair = nodes.find(
+              (n) => n.id !== c.id && (n.type === 'custom_state_t' || n.type === 'custom_state_t1') && n.data?.statePairId === pairId
+            );
+            if (pair) removeIds.add(pair.id);
+          }
+        }
+      }
+    });
+    const allChanges = [...changes];
+    removeIds.forEach((id) => {
+      if (!changes.some((c) => c.type === 'remove' && c.id === id)) {
+        allChanges.push({ type: 'remove', id });
+      }
+    });
+    setNodes((nds) => applyNodeChanges(allChanges, nds));
+  }, [nodes]);
   
   const onEdgesChange = useCallback((changes: EdgeChange[]) => {
     setEdges((eds) => applyEdgeChanges(changes, eds));
@@ -2061,41 +2460,94 @@ function DesignerCanvas({
     setSelectedNode(null);
   }, []);
   
-  // Update node data
+  // Update node data (sync custom state pair when stateName/label changes)
   const handleUpdateNode = useCallback((id: string, newData: any) => {
-    setNodes((nds) => 
-      nds.map((node) => 
-        node.id === id ? { ...node, data: newData } : node
-      )
-    );
-    // Update selected node if it's the one being edited
-    setSelectedNode((prev) => 
-      prev?.id === id ? { ...prev, data: newData } : prev
-    );
+    setNodes((nds) => {
+      const node = nds.find((n) => n.id === id);
+      const isCustomStateHalf = node?.type === 'custom_state_t' || node?.type === 'custom_state_t1';
+      const pairId = node?.data?.statePairId ?? newData.statePairId;
+      const stateName = newData.stateName ?? node?.data?.stateName ?? 'my_state';
+
+      if (isCustomStateHalf && pairId) {
+        return nds.map((n) => {
+          if (n.id === id) return { ...n, data: newData };
+          if ((n.type === 'custom_state_t' || n.type === 'custom_state_t1') && n.data?.statePairId === pairId) {
+            const synced = { ...n.data, stateName, statePairId: pairId };
+            synced.label = n.type === 'custom_state_t' ? `${stateName}_t` : `${stateName}_(t+1)`;
+            return { ...n, data: synced };
+          }
+          return n;
+        });
+      }
+      return nds.map((node) => (node.id === id ? { ...node, data: newData } : node));
+    });
+    setSelectedNode((prev) => (prev?.id === id ? { ...prev, data: newData } : prev));
   }, []);
   
-  // Add new node
+  // Add new node (or pair for Custom State)
   const handleAddNode = useCallback((type: string) => {
+    if (type === 'custom_state') {
+      const pairId = crypto.randomUUID?.() ?? `pair-${Date.now()}`;
+      const stateName = 'my_state';
+      const baseX = 260 + Math.random() * 130;
+      const baseY = 100 + Math.random() * 130;
+      const nodeT: Node = {
+        id: `custom_state_t-${Date.now()}`,
+        type: 'custom_state_t',
+        position: { x: baseX, y: baseY },
+        data: {
+          label: `${stateName}_t`,
+          stateName,
+          defaultValue: '0',
+          shape: [1],
+          statePairId: pairId,
+        },
+      };
+      const nodeT1: Node = {
+        id: `custom_state_t1-${Date.now()}`,
+        type: 'custom_state_t1',
+        position: { x: baseX + 220, y: baseY },
+        data: {
+          label: `${stateName}_(t+1)`,
+          stateName,
+          defaultValue: '0',
+          shape: [1],
+          statePairId: pairId,
+        },
+      };
+      setNodes((nds) => [...nds, nodeT, nodeT1]);
+      return;
+    }
+
     const typeDef = NODE_TYPES[type as keyof typeof NODE_TYPES];
     if (!typeDef) return;
-    
+
     const newNode: Node = {
       id: `${type}-${Date.now()}`,
       type,
       position: { x: 260 + Math.random() * 130, y: 100 + Math.random() * 130 },
       data: { ...typeDef.defaultData },
     };
-    
+
     setNodes((nds) => [...nds, newNode]);
   }, []);
   
-  // Delete selected node
+  // Delete selected node (and custom state pair if applicable)
   const handleDeleteSelected = useCallback(() => {
     if (!selectedNode) return;
-    setNodes((nds) => nds.filter((n) => n.id !== selectedNode.id));
-    setEdges((eds) => eds.filter((e) => e.source !== selectedNode.id && e.target !== selectedNode.id));
+    const pairId = selectedNode.data?.statePairId;
+    const isCustomStateHalf = selectedNode.type === 'custom_state_t' || selectedNode.type === 'custom_state_t1';
+    const toRemove = new Set<string>([selectedNode.id]);
+    if (isCustomStateHalf && pairId) {
+      const pair = nodes.find(
+        (n) => n.id !== selectedNode.id && (n.type === 'custom_state_t' || n.type === 'custom_state_t1') && n.data?.statePairId === pairId
+      );
+      if (pair) toRemove.add(pair.id);
+    }
+    setNodes((nds) => nds.filter((n) => !toRemove.has(n.id)));
+    setEdges((eds) => eds.filter((e) => !toRemove.has(e.source) && !toRemove.has(e.target)));
     setSelectedNode(null);
-  }, [selectedNode]);
+  }, [selectedNode, nodes]);
   
   // Generate code
   const handleGenerateCode = useCallback(async () => {

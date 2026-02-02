@@ -1,13 +1,13 @@
 import { useEffect, useRef } from 'react';
 import { createChart, IChartApi, ISeriesApi, CandlestickData, Time } from 'lightweight-charts';
-import type { BarData, TradeEvent } from '../../types';
+import type { BarData } from '../../types';
 
 interface CandlestickChartProps {
   data: BarData[];
   trades?: TradeEvent[];
 }
 
-export function CandlestickChart({ data, trades = [] }: CandlestickChartProps) {
+export function CandlestickChart({ data }: CandlestickChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
@@ -83,24 +83,14 @@ export function CandlestickChart({ data, trades = [] }: CandlestickChartProps) {
     
     seriesRef.current.setData(chartData);
     
-    // Add trade markers
-    if (trades.length > 0 && chartRef.current) {
-      const markers = trades.map(trade => ({
-        time: (trade.timestamp / 1000) as Time,
-        position: trade.action === 'BUY' ? 'belowBar' as const : 'aboveBar' as const,
-        color: trade.action === 'BUY' ? '#00D97E' : '#FF6B6B',
-        shape: trade.action === 'BUY' ? 'arrowUp' as const : 'arrowDown' as const,
-        text: `${trade.action} ${trade.quantity}`,
-      }));
-      
-      seriesRef.current.setMarkers(markers);
-    }
+    // Omit trade markers - too cluttered; trade info shown in Recent Trades table below
+    seriesRef.current.setMarkers([]);
     
     // Fit content
     if (chartRef.current) {
       chartRef.current.timeScale().fitContent();
     }
-  }, [data, trades]);
+  }, [data]);
   
   return <div ref={containerRef} className="w-full h-full" />;
 }

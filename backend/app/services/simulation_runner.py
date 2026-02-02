@@ -132,10 +132,19 @@ def run_single_job(
     try:
         agent_factory = get_agent_factory_from_registry_db(agent_name)
     except Exception as e:
-        return {"error": f"Agent '{agent_name}' not found: {e}"}
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"[Job] ERROR loading agent '{agent_name}': {error_details}")
+        return {"error": f"Failed to load agent '{agent_name}': {e}"}
     
     # Create agent probe to introspect requirements
-    agent_probe = agent_factory()
+    try:
+        agent_probe = agent_factory()
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"[Job] ERROR instantiating agent '{agent_name}': {error_details}")
+        return {"error": f"Failed to instantiate agent '{agent_name}': {e}\n\nThis usually means there's an error in the agent's code. Check the agent definition."}
     
     # Get symbol from agent
     symbol = getattr(agent_probe, "symbol", None)
@@ -334,7 +343,14 @@ def run_single_job(
         sim_start = time.time()
         
         # Create fresh agent with streaming wrapper
-        inner_agent = agent_factory()
+        try:
+            inner_agent = agent_factory()
+        except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            print(f"[Job] ERROR creating agent instance: {error_details}")
+            return {"error": f"Failed to create agent instance: {e}\n\nThis usually means there's a runtime error in the agent's code."}
+        
         streaming_agent = StreamingAgent(inner_agent, bar_callback)
         
         print(f"[Job] Starting simulation...")
@@ -373,12 +389,25 @@ def run_single_job(
         total_time = time.time() - start_time
         print(f"[Job] Total time: {total_time:.2f}s (Data: {env_time:.2f}s, Simulation: {sim_time:.2f}s)")
         
+        # Portfolio curve: time, equity, position, cash, close per bar (for position & holding % charts)
+        portfolio_curve = []
+        if len(curve) > 0:
+            for _, row in curve.iterrows():
+                portfolio_curve.append({
+                    "time": str(row.get("time", "")),
+                    "equity": float(row.get("equity", 0)),
+                    "position": int(row.get("position", 0)),
+                    "cash": float(row.get("cash", 0)),
+                    "close": float(row.get("close", 0)),
+                })
+        
         return {
             "success": True,
             "final_equity": float(curve["equity"].iloc[-1]) if len(curve) > 0 else 100000.0,
             "trades": trades,
             "total_bars": len(curve),
             "all_bars": all_bars,  # Include all bars for chart
+            "portfolio_curve": portfolio_curve,  # Per-bar portfolio state for charts
             "execution_time_seconds": total_time,
             "data_load_time_seconds": env_time,
             "simulation_time_seconds": sim_time,
@@ -543,7 +572,11 @@ async def run_simulation_async(
                 progress_callback,
             )
         except Exception as e:
-            result = {"error": str(e)}
+            import traceback
+            error_msg = str(e) if str(e) else type(e).__name__
+            error_details = traceback.format_exc()
+            print(f"[Job] Exception in run_job_async: {error_details}")
+            result = {"error": f"{error_msg}\n\n{error_details}"}
         
         # Send job completion
         if is_connected():

@@ -231,17 +231,22 @@ async def rename_agent(agent_name: str, rename_request: AgentRename):
                 if cur.fetchone():
                     raise HTTPException(status_code=400, detail=f"Agent '{new_name}' already exists")
                 
-                # Also rename the linked visual design (if any)
+                # Get linked visual design ID before renaming (for later update)
                 cur.execute(
-                    """
-                    UPDATE visual_agent_designs
-                    SET name = %s, agent_name = %s
-                    WHERE agent_name = %s
-                    """,
-                    (new_name, new_name, agent_name)
+                    "SELECT id FROM visual_agent_designs WHERE agent_name = %s",
+                    (agent_name,)
                 )
+                linked_design = cur.fetchone()
+                linked_design_id = linked_design[0] if linked_design else None
                 
-                # Rename the agent
+                # Clear the FK reference first (allows agent rename without FK violation)
+                if linked_design_id:
+                    cur.execute(
+                        "UPDATE visual_agent_designs SET agent_name = NULL WHERE id = %s",
+                        (linked_design_id,)
+                    )
+                
+                # Rename the agent in agents_registry
                 cur.execute(
                     """
                     UPDATE agents_registry
@@ -253,15 +258,20 @@ async def rename_agent(agent_name: str, rename_request: AgentRename):
                 )
                 row = cur.fetchone()
                 
-                # Get the visual_design_id if any
-                cur.execute(
-                    "SELECT id FROM visual_agent_designs WHERE agent_name = %s",
-                    (new_name,)
-                )
-                design_row = cur.fetchone()
-                visual_design_id = design_row[0] if design_row else None
+                # Re-link visual design with new agent name
+                if linked_design_id:
+                    cur.execute(
+                        """
+                        UPDATE visual_agent_designs
+                        SET name = %s, agent_name = %s
+                        WHERE id = %s
+                        """,
+                        (new_name, new_name, linked_design_id)
+                    )
                 
             conn.commit()
+        
+        visual_design_id = linked_design_id
         
         return AgentResponse(
             name=row[0],

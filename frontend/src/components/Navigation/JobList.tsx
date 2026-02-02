@@ -63,7 +63,15 @@ export function JobList({ jobs, activeIndex, onSelect }: JobListProps) {
           {job.final_result && (
             <div className="mt-2 text-sm">
               {job.final_result.error ? (
-                <span className="text-red-400">Error</span>
+                <div className="text-red-400">
+                  <div className="font-medium mb-1">Error</div>
+                  <div 
+                    className="text-xs opacity-80 break-words whitespace-pre-wrap max-h-24 overflow-y-auto bg-red-500/10 p-2 rounded"
+                    title={job.final_result.error}
+                  >
+                    {job.final_result.error}
+                  </div>
+                </div>
               ) : (
                 <span className={job.final_result.final_equity && job.final_result.final_equity > 100000 
                   ? 'text-green-400' 

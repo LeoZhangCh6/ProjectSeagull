@@ -24,63 +24,110 @@ export function SimulationDashboard({ onBack }: SimulationDashboardProps) {
   } = useSimulationStore();
   
   const [isConnected, setIsConnected] = useState(false);
+  const [isReconnecting, setIsReconnecting] = useState(false);
+  const [reconnectedAt, setReconnectedAt] = useState<number | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const hasStartedRef = useRef(false);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
+  const reconnectAttemptsRef = useRef(0);
+  const isMountedRef = useRef(true);
   
-  // WebSocket connection - managed directly to avoid closure issues
+  const MAX_RECONNECT_ATTEMPTS = 5;
+  const RECONNECT_BASE_DELAY_MS = 2000;
+  
+  // WebSocket connection with auto-reconnect on unexpected disconnect
   useEffect(() => {
     if (!session_id) return;
     
-    // Reset started flag for new session
+    isMountedRef.current = true;
     hasStartedRef.current = false;
+    reconnectAttemptsRef.current = 0;
     
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/ws/simulation/${session_id}`;
     
-    console.log('[Dashboard] Connecting to:', wsUrl);
-    
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
-    
-    ws.onopen = () => {
-      console.log('[Dashboard] WebSocket connected');
-      setIsConnected(true);
+    const connect = () => {
+      if (!isMountedRef.current) return;
       
-      // Send start message immediately
-      if (!hasStartedRef.current) {
-        hasStartedRef.current = true;
-        console.log('[Dashboard] Sending start action');
-        ws.send(JSON.stringify({ action: 'start' }));
-        setStatus('running');
-      }
+      console.log('[Dashboard] Connecting to:', wsUrl, reconnectAttemptsRef.current > 0 ? `(attempt ${reconnectAttemptsRef.current + 1})` : '');
+      
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+      
+      ws.onopen = () => {
+        if (!isMountedRef.current) {
+          ws.close();
+          return;
+        }
+        const wasReconnect = reconnectAttemptsRef.current > 0;
+        reconnectAttemptsRef.current = 0;
+        setIsReconnecting(false);
+        console.log('[Dashboard] WebSocket connected');
+        setIsConnected(true);
+        
+        if (!hasStartedRef.current) {
+          hasStartedRef.current = true;
+          console.log('[Dashboard] Sending start action');
+          ws.send(JSON.stringify({ action: 'start' }));
+          setStatus('running');
+        } else if (wasReconnect) {
+          setReconnectedAt(Date.now());
+          setTimeout(() => setReconnectedAt(null), 4000);
+        }
+      };
+      
+      ws.onclose = (event) => {
+        wsRef.current = null;
+        setIsConnected(false);
+        if (!isMountedRef.current) return;
+        
+        // 1000 = normal closure (e.g. server finished, user navigated away)
+        if (event.code === 1000) return;
+        
+        if (reconnectAttemptsRef.current >= MAX_RECONNECT_ATTEMPTS) {
+          console.log('[Dashboard] Max reconnect attempts reached, giving up');
+          setIsReconnecting(false);
+          return;
+        }
+        
+        setIsReconnecting(true);
+        const delay = Math.min(RECONNECT_BASE_DELAY_MS * Math.pow(2, reconnectAttemptsRef.current), 30000);
+        reconnectAttemptsRef.current += 1;
+        console.log(`[Dashboard] Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current}/${MAX_RECONNECT_ATTEMPTS})`);
+        
+        reconnectTimeoutRef.current = setTimeout(() => {
+          connect();
+        }, delay);
+      };
+      
+      ws.onerror = (error) => {
+        console.error('[Dashboard] WebSocket error:', error);
+      };
+      
+      ws.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data);
+          console.log('[Dashboard] Received:', message.type);
+          handleMessage(message);
+        } catch (e) {
+          console.error('[Dashboard] Failed to parse message:', e);
+        }
+      };
     };
     
-    ws.onclose = (event) => {
-      console.log('[Dashboard] WebSocket closed:', event.code, event.reason);
-      setIsConnected(false);
-      wsRef.current = null;
-    };
-    
-    ws.onerror = (error) => {
-      console.error('[Dashboard] WebSocket error:', error);
-    };
-    
-    ws.onmessage = (event) => {
-      try {
-        const message = JSON.parse(event.data);
-        console.log('[Dashboard] Received:', message.type);
-        handleMessage(message);
-      } catch (e) {
-        console.error('[Dashboard] Failed to parse message:', e);
-      }
-    };
+    connect();
     
     return () => {
-      console.log('[Dashboard] Cleaning up WebSocket');
-      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
-        ws.close();
+      isMountedRef.current = false;
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = undefined;
       }
-      wsRef.current = null;
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      console.log('[Dashboard] WebSocket cleanup');
     };
   }, [session_id, handleMessage, setStatus]);
   
@@ -112,7 +159,60 @@ export function SimulationDashboard({ onBack }: SimulationDashboardProps) {
   const startEquity = 100000;
   const pnl = currentEquity - startEquity;
   const pnlPercent = ((currentEquity / startEquity) - 1) * 100;
-  const tradesCount = activeJob?.trades.length ?? 0;
+  
+  // Trades: prefer final_result.trades (from job_complete) since backend sends full list on completion
+  const trades = activeJob?.final_result?.trades ?? activeJob?.trades ?? [];
+  const tradesCount = trades.length;
+  
+  // Trade duration: (1) During simulation: timestamp diff → days. (2) After completion: bar count × frequency → days.
+  const bars = activeJob?.bars ?? [];
+  const chartFreq = activeJob?.final_result?.chart_frequency;
+  let tradeDurationDays: number | null = null;
+  
+  const timestampToDays = (diff: number): number => {
+    if (diff <= 0) return 0;
+    // Detect ms vs seconds: if diff > ~100 days in seconds (8.64e6), assume ms
+    const msPerDay = 86400000;
+    const secPerDay = 86400;
+    const days = diff > secPerDay * 100 ? diff / msPerDay : diff / secPerDay;
+    return Math.round(days);
+  };
+  
+  if (bars.length >= 2) {
+    if (chartFreq) {
+      const ts = (chartFreq.timespan || '').toLowerCase();
+      const mult = chartFreq.multiplier ?? 1;
+      if (ts === 'day') {
+        tradeDurationDays = Math.round(bars.length * mult);
+      } else if (ts === 'hour') {
+        tradeDurationDays = Math.round((bars.length * mult) / 24);
+      } else if (ts === 'minute' || ts === 'min') {
+        tradeDurationDays = Math.round((bars.length * mult) / (60 * 24));
+      } else {
+        const diff = bars[bars.length - 1].timestamp - bars[0].timestamp;
+        tradeDurationDays = timestampToDays(diff);
+      }
+    } else {
+      // During simulation: use (last_timestamp - first_timestamp) converted to days
+      const diff = bars[bars.length - 1].timestamp - bars[0].timestamp;
+      tradeDurationDays = timestampToDays(diff);
+    }
+  }
+  
+  // Underlying stock return: (last_close - first_close) / first_close * 100
+  const underlyingReturnPercent = bars.length >= 2 && bars[0].close > 0
+    ? ((bars[bars.length - 1].close - bars[0].close) / bars[0].close) * 100
+    : null;
+
+  // Curve data with position & ratio for new charts (use equity_curve which has position/close from portfolio_curve)
+  const curve = activeJob?.equity_curve ?? [];
+  const positionData = curve.map(p => ({ time: p.time, position: p.position ?? 0 }));
+  const ratioData = curve
+    .filter(p => (p.equity ?? 0) > 0 && p.close != null)
+    .map(p => ({
+      time: p.time,
+      ratio: ((p.position ?? 0) * (p.close ?? 0) / (p.equity ?? 1)) * 100,
+    }));
   
   return (
     <div className="h-[calc(100vh-73px)] flex flex-col">
@@ -169,6 +269,13 @@ export function SimulationDashboard({ onBack }: SimulationDashboardProps) {
           )}
         </div>
       </div>
+      
+      {/* Connection restored toast */}
+      {reconnectedAt && (
+        <div className="mx-4 mt-2 px-4 py-2 bg-green-900/50 border border-green-600 rounded text-green-200 text-sm">
+          Connection restored. Simulation may have been interrupted — run again from Config if needed.
+        </div>
+      )}
       
       {/* Main Dashboard Area */}
       <div className="flex-1 flex overflow-hidden">
@@ -228,7 +335,7 @@ export function SimulationDashboard({ onBack }: SimulationDashboardProps) {
               )}
               
               {/* Metrics Bar */}
-              <div className="grid grid-cols-4 gap-4">
+              <div className="grid grid-cols-6 gap-4">
                 <MetricCard 
                   label="Equity" 
                   value={`$${currentEquity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
@@ -242,6 +349,19 @@ export function SimulationDashboard({ onBack }: SimulationDashboardProps) {
                   label="Return" 
                   value={`${pnlPercent >= 0 ? '+' : ''}${pnlPercent.toFixed(2)}%`}
                   color={pnlPercent >= 0 ? 'text-green-400' : 'text-red-400'}
+                />
+                <MetricCard 
+                  label="Trade Duration" 
+                  value={tradeDurationDays !== null ? `${tradeDurationDays} days` : '–'}
+                />
+                <MetricCard 
+                  label="Underlying Return" 
+                  value={underlyingReturnPercent !== null 
+                    ? `${underlyingReturnPercent >= 0 ? '+' : ''}${underlyingReturnPercent.toFixed(2)}%` 
+                    : '–'}
+                  color={underlyingReturnPercent !== null 
+                    ? (underlyingReturnPercent >= 0 ? 'text-green-400' : 'text-red-400') 
+                    : undefined}
                 />
                 <MetricCard 
                   label="Trades" 
@@ -260,10 +380,7 @@ export function SimulationDashboard({ onBack }: SimulationDashboardProps) {
                   )}
                 </h3>
                 <div className="h-[300px]">
-                  <CandlestickChart 
-                    data={activeJob.bars} 
-                    trades={activeJob.trades}
-                  />
+                  <CandlestickChart data={activeJob.bars} />
                 </div>
               </div>
               
@@ -283,8 +400,42 @@ export function SimulationDashboard({ onBack }: SimulationDashboardProps) {
                 </div>
               </div>
               
+              {/* Position (shares held) over time */}
+              {positionData.length > 0 && (
+                <div className="card p-4">
+                  <h3 className="text-sm font-medium text-[var(--text-secondary)] mb-3">
+                    Position (shares held)
+                  </h3>
+                  <div className="h-[160px]">
+                    <LineChart 
+                      data={positionData}
+                      dataKey="position"
+                      color="#A78BFA"
+                      name="Shares"
+                    />
+                  </div>
+                </div>
+              )}
+              
+              {/* Stock value / total equity ratio (%) */}
+              {ratioData.length > 0 && (
+                <div className="card p-4">
+                  <h3 className="text-sm font-medium text-[var(--text-secondary)] mb-3">
+                    Stock / Equity (%)
+                  </h3>
+                  <div className="h-[160px]">
+                    <LineChart 
+                      data={ratioData}
+                      dataKey="ratio"
+                      color="#F59E0B"
+                      name="Stock/Equity %"
+                    />
+                  </div>
+                </div>
+              )}
+              
               {/* Trades Table */}
-              {activeJob.trades.length > 0 && (
+              {trades.length > 0 && (
                 <div className="card p-4">
                   <h3 className="text-sm font-medium text-[var(--text-secondary)] mb-3">
                     Recent Trades
@@ -300,7 +451,7 @@ export function SimulationDashboard({ onBack }: SimulationDashboardProps) {
                         </tr>
                       </thead>
                       <tbody>
-                        {activeJob.trades.slice(-10).reverse().map((trade, i) => (
+                        {trades.slice(-10).reverse().map((trade, i) => (
                           <tr key={i}>
                             <td className="font-mono text-sm">
                               {new Date(trade.timestamp).toLocaleTimeString()}
@@ -325,7 +476,11 @@ export function SimulationDashboard({ onBack }: SimulationDashboardProps) {
                     {activeJob.final_result.error ? 'Error' : 'Completed'}
                   </h3>
                   {activeJob.final_result.error ? (
-                    <p className="text-red-400">{activeJob.final_result.error}</p>
+                    <div className="text-red-400">
+                      <pre className="whitespace-pre-wrap text-sm font-mono bg-red-500/10 p-3 rounded max-h-64 overflow-y-auto">
+                        {activeJob.final_result.error || 'Unknown error occurred. Check server logs for details.'}
+                      </pre>
+                    </div>
                   ) : (
                     <div className="text-sm text-[var(--text-secondary)]">
                       Final Equity: ${activeJob.final_result.final_equity?.toLocaleString()} | 
@@ -344,7 +499,9 @@ export function SimulationDashboard({ onBack }: SimulationDashboardProps) {
                    'No data available'}
                 </div>
                 {!isConnected && session_id && (
-                  <div className="text-yellow-400 text-sm">Connecting to server...</div>
+                  <div className="text-yellow-400 text-sm">
+                    {isReconnecting ? 'Reconnecting...' : 'Connecting to server...'}
+                  </div>
                 )}
                 {isConnected && status === 'running' && (
                   <div className="text-blue-400 text-sm">Simulation started, waiting for first job...</div>

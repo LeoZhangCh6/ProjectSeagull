@@ -68,7 +68,23 @@ def get_agent_factory_from_registry_db(agent_name: str):
             )
             row = cur.fetchone()
             if not row:
-                raise KeyError(f"Agent '{agent_name}' not found in agents_registry table.")
+                # Check if agent exists but is disabled
+                cur.execute(
+                    "SELECT name, enabled FROM agents_registry WHERE name = %s",
+                    (agent_name,)
+                )
+                disabled_check = cur.fetchone()
+                if disabled_check:
+                    raise KeyError(f"Agent '{agent_name}' exists but is disabled (enabled=FALSE).")
+                
+                # List available agents to help debug
+                cur.execute("SELECT name FROM agents_registry WHERE enabled = TRUE LIMIT 10")
+                available = [r[0] for r in cur.fetchall()]
+                available_str = ", ".join(available) if available else "(none)"
+                raise KeyError(
+                    f"Agent '{agent_name}' not found in agents_registry table.\n"
+                    f"Available agents: {available_str}"
+                )
             
             path, code = row
             
@@ -85,14 +101,31 @@ def get_agent_factory_from_registry_db(agent_name: str):
                 try:
                     # Execute code in module namespace
                     exec(code, module.__dict__)
+                except SyntaxError as e:
+                    del sys.modules[module_name]
+                    raise Exception(
+                        f"Syntax error in agent '{agent_name}' code (line {e.lineno}): {e.msg}\n"
+                        f"  {e.text.strip() if e.text else ''}"
+                    )
+                except NameError as e:
+                    del sys.modules[module_name]
+                    raise Exception(
+                        f"Name error in agent '{agent_name}' code: {e}\n"
+                        f"This usually means a variable or function is not defined or imported."
+                    )
                 except Exception as e:
                     del sys.modules[module_name]
-                    raise Exception(f"Failed to execute agent '{agent_name}' code from database: {e}")
+                    import traceback
+                    tb = traceback.format_exc()
+                    raise Exception(f"Failed to execute agent '{agent_name}' code from database: {e}\n\nDetails:\n{tb}")
                 
                 # Return factory function
                 if not hasattr(module, 'create_agent'):
+                    # Show first few lines of code to help debug
+                    code_preview = '\n'.join(code.split('\n')[:20])
                     raise AttributeError(
-                        f"Agent '{agent_name}' code does not define create_agent() function"
+                        f"Agent '{agent_name}' code does not define create_agent() function.\n\n"
+                        f"Code preview (first 20 lines):\n{code_preview}"
                     )
                 
                 return lambda: module.create_agent()

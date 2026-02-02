@@ -10,7 +10,11 @@ import { Handle, Position, NodeProps, NodeResizer } from '@xyflow/react';
 import { getNodeTypeDef } from './nodeTypes';
 
 // Preview data type (injected by parent component)
-type PreviewData = { type: 'tensor'; values: number[] } | { type: 'scalar'; value: number };
+type PreviewData =
+  | { type: 'tensor'; values: number[] }
+  | { type: 'scalar'; value: number }
+  | { type: 'scalars'; values: number[] }   // 2-3 scalars for multi-output display
+  | { type: 'matrix'; values: number[][] }; // 2D for heatmap
 
 // Shape type
 type ShapeDim = number | 'L';
@@ -23,8 +27,8 @@ function formatShape(shape: Shape | null): string {
   return `(${rows}, ${cols})`;
 }
 
-// Sparkline component for visualizing tensor/1D data
-function Sparkline({ values, color = '#22c55e', width = 130, height = 28, showLabels = true }: { 
+// Line Sparkline component for visualizing tensor/1D data
+function LineSparkline({ values, color = '#22c55e', width = 130, height = 28, showLabels = true }: { 
   values: number[]; 
   color?: string;
   width?: number;
@@ -77,27 +81,185 @@ function Sparkline({ values, color = '#22c55e', width = 130, height = 28, showLa
   );
 }
 
+// Bar/Column Sparkline component - positive values use node color, negative values are red
+function BarSparkline({ values, color = '#22c55e', width = 130, height = 28 }: { 
+  values: number[]; 
+  color?: string;
+  width?: number;
+  height?: number;
+}) {
+  if (!values || values.length === 0) {
+    return (
+      <div 
+        className="flex items-center justify-center text-xs text-gray-500 bg-gray-800/50 rounded"
+        style={{ width, height }}
+      >
+        No data
+      </div>
+    );
+  }
+  
+  const min = Math.min(...values, 0); // Include 0 in range
+  const max = Math.max(...values, 0);
+  const range = max - min || 1;
+  
+  // Calculate zero line position
+  const zeroY = height - 2 - ((0 - min) / range) * (height - 4);
+  
+  const barWidth = Math.max(1, (width - values.length + 1) / values.length);
+  const gap = 1;
+  
+  return (
+    <div className="bg-gray-800/50 rounded p-0.5" style={{ width: width + 4 }}>
+      <svg width={width} height={height}>
+        {/* Zero line */}
+        <line 
+          x1={0} 
+          y1={zeroY} 
+          x2={width} 
+          y2={zeroY} 
+          stroke="#4b5563" 
+          strokeWidth="0.5" 
+          strokeDasharray="2,2"
+        />
+        {values.map((v, i) => {
+          const x = i * (barWidth + gap);
+          const barHeight = Math.abs(((v) / range) * (height - 4));
+          const isPositive = v >= 0;
+          const barY = isPositive ? zeroY - barHeight : zeroY;
+          const barColor = isPositive ? color : '#ef4444'; // Red for negative
+          
+          return (
+            <rect
+              key={i}
+              x={x}
+              y={Math.max(2, barY)}
+              width={barWidth}
+              height={Math.max(1, barHeight)}
+              fill={barColor}
+              rx={0.5}
+            />
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
+// 2D Heatmap component for matrix visualization
+function HeatmapDisplay({ values, color = '#ef4444', width = 140, height = 80 }: {
+  values: number[][];
+  color?: string;
+  width?: number;
+  height?: number;
+}) {
+  if (!values || values.length === 0 || values.every(row => row.length === 0)) {
+    return (
+      <div 
+        className="flex items-center justify-center text-xs text-gray-500 bg-gray-800/50 rounded"
+        style={{ width, height }}
+      >
+        No data
+      </div>
+    );
+  }
+
+  const flat = values.flat();
+  const min = Math.min(...flat);
+  const max = Math.max(...flat);
+  const range = max - min || 1;
+
+  const rows = values.length;
+  const cols = Math.max(...values.map(r => r.length));
+
+  const cellW = Math.max(2, (width - 2) / cols);
+  const cellH = Math.max(2, (height - 2) / rows);
+
+  return (
+    <div className="bg-gray-800/50 rounded p-1" style={{ width: width + 4, height: height + 4 }}>
+      <svg width={width} height={height}>
+        {values.map((row, ri) =>
+          row.map((v, ci) => {
+            const intensity = (v - min) / range;
+            const r = parseInt(color.slice(1, 3), 16);
+            const g = parseInt(color.slice(3, 5), 16);
+            const b = parseInt(color.slice(5, 7), 16);
+            const fill = `rgba(${r},${g},${b},${0.3 + intensity * 0.7})`;
+            return (
+              <rect
+                key={`${ri}-${ci}`}
+                x={ci * cellW}
+                y={ri * cellH}
+                width={cellW - 0.5}
+                height={cellH - 0.5}
+                fill={fill}
+                stroke="#374151"
+                strokeWidth={0.5}
+              />
+            );
+          })
+        )}
+      </svg>
+    </div>
+  );
+}
+
+// Combined Sparkline - renders line or bar based on type prop
+function Sparkline({ values, color = '#22c55e', width = 130, height = 28, showLabels = true, type = 'line' }: { 
+  values: number[]; 
+  color?: string;
+  width?: number;
+  height?: number;
+  showLabels?: boolean;
+  type?: 'line' | 'bar';
+}) {
+  if (type === 'bar') {
+    return <BarSparkline values={values} color={color} width={width} height={height} />;
+  }
+  return <LineSparkline values={values} color={color} width={width} height={height} showLabels={showLabels} />;
+}
+
+// Format a scalar value for display
+function formatScalarValue(v: number): string {
+  if (Math.abs(v) >= 1000) return v.toFixed(0);
+  if (Math.abs(v) >= 100) return v.toFixed(1);
+  if (Math.abs(v) >= 1) return v.toFixed(2);
+  return v.toFixed(4);
+}
+
 // Scalar value display component
 function ScalarDisplay({ value, color = '#22c55e', label }: { 
   value: number; 
   color?: string;
   label?: string;
 }) {
-  // Format the value based on magnitude
-  const formatValue = (v: number): string => {
-    if (Math.abs(v) >= 1000) return v.toFixed(0);
-    if (Math.abs(v) >= 100) return v.toFixed(1);
-    if (Math.abs(v) >= 1) return v.toFixed(2);
-    return v.toFixed(4);
-  };
-  
   return (
     <div className="bg-gray-800/50 rounded p-2 text-center">
       <span 
         className="text-lg font-mono"
         style={{ color }}
       >
-        {formatValue(value)}
+        {formatScalarValue(value)}
+      </span>
+      {label && <div className="text-gray-500 text-xs mt-1">{label}</div>}
+    </div>
+  );
+}
+
+// Multiple scalars display: (s1, s2, ...) up to 6 values
+function ScalarTupleDisplay({ values, color = '#22c55e', label }: {
+  values: number[];
+  color?: string;
+  label?: string;
+}) {
+  const displayValues = values.slice(0, 6).map(v => formatScalarValue(v));
+  return (
+    <div className="bg-gray-800/50 rounded p-2 text-center">
+      <span 
+        className="text-lg font-mono"
+        style={{ color }}
+      >
+        ({displayValues.join(', ')})
       </span>
       {label && <div className="text-gray-500 text-xs mt-1">{label}</div>}
     </div>
@@ -110,13 +272,15 @@ function PreviewDisplay({
   color, 
   width = 130, 
   height = 28,
-  scalarLabel 
+  scalarLabel,
+  sparklineType = 'line'
 }: { 
   preview?: PreviewData;
   color: string;
   width?: number;
   height?: number;
   scalarLabel?: string;
+  sparklineType?: 'line' | 'bar';
 }) {
   if (!preview) {
     return (
@@ -133,7 +297,116 @@ function PreviewDisplay({
     return <ScalarDisplay value={preview.value} color={color} label={scalarLabel} />;
   }
   
-  return <Sparkline values={preview.values} color={color} width={width} height={height} />;
+  if (preview.type === 'scalars' && preview.values.length >= 1) {
+    return <ScalarTupleDisplay values={preview.values} color={color} label={scalarLabel} />;
+  }
+  
+  return <Sparkline values={preview.type === 'tensor' ? preview.values : []} color={color} width={width} height={height} type={sparklineType} />;
+}
+
+/**
+ * View Output Display - meter/debugger: shows scalar, sparkline, or 2D heatmap based on input.
+ */
+function ViewOutputDisplay({
+  preview,
+  shape,
+  color = '#ef4444',
+  width = 140,
+  height = 80
+}: {
+  preview?: PreviewData;
+  shape?: Shape | null;
+  color?: string;
+  width?: number;
+  height?: number;
+}) {
+  if (!preview) {
+    return (
+      <div 
+        className="flex items-center justify-center text-xs text-gray-500 bg-gray-800/50 rounded"
+        style={{ width, height }}
+      >
+        Not connected
+      </div>
+    );
+  }
+
+  if (preview.type === 'matrix' && preview.values.length > 0) {
+    return <HeatmapDisplay values={preview.values} color={color} width={width} height={height} />;
+  }
+
+  if (preview.type === 'scalar') {
+    return <ScalarDisplay value={preview.value} color={color} />;
+  }
+
+  if (preview.type === 'scalars' && preview.values.length >= 1) {
+    return <ScalarTupleDisplay values={preview.values} color={color} />;
+  }
+
+  const isScalarShape = shape && shape[0] === 1 && shape[1] === 1;
+  const scalarValue = preview.type === 'tensor' && preview.values.length === 1
+    ? preview.values[0] : null;
+  if (isScalarShape && scalarValue !== null) {
+    return <ScalarDisplay value={scalarValue} color={color} />;
+  }
+
+  const values = preview.type === 'tensor' ? preview.values : [];
+  return <Sparkline values={values} color={color} width={width} height={height} />;
+}
+
+/**
+ * Smart preview display - dynamically shows scalar, (s1,s2,s3), or sparkline based on shape and preview.
+ * Use this for all 1-D transforms and signals for consistent display behavior.
+ */
+function SmartPreviewDisplay({ 
+  preview, 
+  shape,
+  color, 
+  width = 130, 
+  height = 28,
+  scalarLabel,
+  sparklineType = 'line'
+}: { 
+  preview?: PreviewData;
+  shape?: Shape | null;
+  color: string;
+  width?: number;
+  height?: number;
+  scalarLabel?: string;
+  sparklineType?: 'line' | 'bar';
+}) {
+  if (!preview) {
+    return (
+      <div 
+        className="flex items-center justify-center text-xs text-gray-500 bg-gray-800/50 rounded"
+        style={{ width, height }}
+      >
+        Not connected
+      </div>
+    );
+  }
+  
+  // Multiple scalars (2–6): display (s1, s2, ...)
+  if (preview.type === 'scalars' && preview.values.length >= 1) {
+    return <ScalarTupleDisplay values={preview.values} color={color} label={scalarLabel} />;
+  }
+  
+  // Single scalar: shape (1,1) or explicit scalar type
+  const isScalarShape = shape && shape[0] === 1 && shape[1] === 1;
+  const scalarValue = preview.type === 'scalar' 
+    ? preview.value 
+    : (preview.type === 'tensor' && preview.values.length === 1) ? preview.values[0] : null;
+  
+  if (isScalarShape && scalarValue !== null) {
+    return <ScalarDisplay value={scalarValue} color={color} label={scalarLabel} />;
+  }
+  if (preview.type === 'scalar') {
+    return <ScalarDisplay value={preview.value} color={color} label={scalarLabel} />;
+  }
+  
+  // Tensor/vector: show sparkline
+  const values = preview.type === 'tensor' ? preview.values : [];
+  return <Sparkline values={values} color={color} width={width} height={height} type={sparklineType} />;
 }
 
 // Base node component that all node types use
@@ -147,6 +420,7 @@ function BaseNode({ id, data, selected, nodeType }: BaseNodeProps) {
   // Get preview data and shape from parent-computed values
   const preview = data._preview as PreviewData | undefined;
   const shape = data._shape as Shape | null;
+  const sparklineType = (data.sparklineType || 'line') as 'line' | 'bar';
   
   if (!typeDef) {
     return <div className="p-2 bg-gray-700 rounded">Unknown: {nodeType}</div>;
@@ -159,14 +433,14 @@ function BaseNode({ id, data, selected, nodeType }: BaseNodeProps) {
   const maxHandles = Math.max(numInputs, numOutputs, 1);
   
   // Calculate minimum height based on number of handles
-  // Show preview for all nodes that have outputs
-  const hasPreview = typeDef.outputs.length > 0 || nodeType === 'output';
+  // Show preview for all nodes that have outputs or are sinks (output, view_output)
+  const hasPreview = typeDef.outputs.length > 0 || nodeType === 'output' || nodeType === 'view_output';
   const baseBodyHeight = hasPreview ? 70 : 40;
   const handleHeight = maxHandles * 26;
   const minBodyHeight = Math.max(baseBodyHeight, handleHeight);
   
-  // Don't show resizer for output node to avoid the white box issue
-  const showResizer = selected && nodeType !== 'output';
+  // Don't show resizer for output nodes to avoid the white box issue
+  const showResizer = selected && nodeType !== 'output' && nodeType !== 'view_output';
   
   return (
     <div
@@ -209,7 +483,7 @@ function BaseNode({ id, data, selected, nodeType }: BaseNodeProps) {
             <div className="text-gray-500 text-[10px] mb-1">
               {data.frequency || '1D'}
             </div>
-            <PreviewDisplay preview={preview} color={typeDef.color} width={156} height={32} />
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} width={156} height={32} sparklineType={sparklineType} />
           </div>
         )}
         
@@ -220,7 +494,7 @@ function BaseNode({ id, data, selected, nodeType }: BaseNodeProps) {
             {data.shape && data.shape.length > 1 && (
               <div className="text-gray-500 mb-1">Shape: [{data.shape.join('×')}]</div>
             )}
-            <PreviewDisplay preview={preview} color={typeDef.color} width={130} height={24} />
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} width={130} height={24} sparklineType={sparklineType} />
           </div>
         )}
         
@@ -233,7 +507,7 @@ function BaseNode({ id, data, selected, nodeType }: BaseNodeProps) {
             </div>
             {/* Only show preview for 1D variables */}
             {(data.shape?.length ?? 1) <= 1 && (
-              <PreviewDisplay preview={preview} color={typeDef.color} width={130} height={24} />
+              <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} width={130} height={24} sparklineType={sparklineType} />
             )}
             {(data.shape?.length ?? 1) > 1 && (
               <div className="text-gray-500 italic">Multi-dim (no preview)</div>
@@ -250,7 +524,15 @@ function BaseNode({ id, data, selected, nodeType }: BaseNodeProps) {
                 : `N=${data.n || 10}, start=${data.start ?? 0}, step=${data.step ?? 1}`
               }
             </div>
-            <PreviewDisplay preview={preview} color={typeDef.color} width={130} height={28} />
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} width={130} height={28} sparklineType={sparklineType} />
+          </div>
+        )}
+        
+        {/* Timestamp: year, month, weeknumber, day_of_week, hour, timestamp_seconds */}
+        {nodeType === 'timestamp' && (
+          <div className="text-xs text-gray-300">
+            <div className="text-gray-500 mb-0.5 text-[10px]">year | month | week | dow | hour | ts_sec</div>
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
           </div>
         )}
         
@@ -271,11 +553,11 @@ function BaseNode({ id, data, selected, nodeType }: BaseNodeProps) {
             <div className="text-gray-500 mb-1">
               History: {data.historyLength ?? 50} bars
             </div>
-            <PreviewDisplay preview={preview} color={typeDef.color} />
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
           </div>
         )}
         
-        {/* Custom State */}
+        {/* Custom State (legacy single block) */}
         {nodeType === 'custom_state' && (
           <div className="text-xs text-gray-300">
             <div className="text-gray-500 mb-1 font-mono text-[10px]">
@@ -284,19 +566,15 @@ function BaseNode({ id, data, selected, nodeType }: BaseNodeProps) {
             <div className="text-gray-600 text-[10px] mb-1">
               default: {data.defaultValue || '0'}
             </div>
-            {shape && shape[0] === 1 && shape[1] === 1 ? (
-              <ScalarDisplay value={preview?.type === 'scalar' ? preview.value : 0} color={typeDef.color} />
-            ) : (
-              <PreviewDisplay preview={preview} color={typeDef.color} />
-            )}
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
           </div>
         )}
         
         {/* Sign function */}
         {nodeType === 'sign' && (
           <div className="text-xs text-gray-300">
-            <div className="text-gray-500 mb-1">sign(x): 1 if x{'>'} 0, else -1</div>
-            <PreviewDisplay preview={preview} color={typeDef.color} />
+            <div className="text-gray-500 mb-1">sign(x): 1 if x{'>'} 0, 0 if x=0, -1 if x{'<'} 0</div>
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
           </div>
         )}
         
@@ -304,7 +582,7 @@ function BaseNode({ id, data, selected, nodeType }: BaseNodeProps) {
         {nodeType === 'sin' && (
           <div className="text-xs text-gray-300">
             <div className="text-gray-500 mb-1">sin(x)</div>
-            <PreviewDisplay preview={preview} color={typeDef.color} />
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
           </div>
         )}
         
@@ -312,7 +590,7 @@ function BaseNode({ id, data, selected, nodeType }: BaseNodeProps) {
         {nodeType === 'cos' && (
           <div className="text-xs text-gray-300">
             <div className="text-gray-500 mb-1">cos(x)</div>
-            <PreviewDisplay preview={preview} color={typeDef.color} />
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
           </div>
         )}
         
@@ -322,7 +600,7 @@ function BaseNode({ id, data, selected, nodeType }: BaseNodeProps) {
             <div className="mb-1 text-gray-500">
               [{-(data.n || 10)} : {(data.m ?? 0) === 0 ? 'end' : -(data.m ?? 0)}]
             </div>
-            <PreviewDisplay preview={preview} color={typeDef.color} />
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
           </div>
         )}
         
@@ -333,16 +611,99 @@ function BaseNode({ id, data, selected, nodeType }: BaseNodeProps) {
               <div key={i} className="text-gray-500">input_{i} →</div>
             ))}
             <div className="mb-1"></div>
-            <PreviewDisplay preview={preview} color={typeDef.color} />
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
           </div>
         )}
         
         {/* Binary ops: add, subtract, multiply, divide */}
-        {['add', 'subtract', 'multiply', 'divide'].includes(nodeType) && (
+        {['add', 'multiply', 'divide'].includes(nodeType) && (
           <div className="text-xs text-gray-300">
             <div className="text-gray-500">a →</div>
             <div className="text-gray-500 mb-1">b →</div>
-            <PreviewDisplay preview={preview} color={typeDef.color} />
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
+          </div>
+        )}
+        {nodeType === 'subtract' && (
+          <div className="text-xs text-gray-300">
+            <div className="text-gray-500 mb-0.5">{data.subtractMode === 'ratio' ? '(a-b)/b' : 'a - b'}</div>
+            <div className="text-gray-500">a →</div>
+            <div className="text-gray-500 mb-1">b →</div>
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
+          </div>
+        )}
+        {/* Abs */}
+        {nodeType === 'abs' && (
+          <div className="text-xs text-gray-300">
+            <div className="text-gray-500 mb-1">|x|</div>
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
+          </div>
+        )}
+        {/* Parity Check */}
+        {nodeType === 'parity_check' && (
+          <div className="text-xs text-gray-300">
+            <div className="text-gray-500 mb-0.5">parity: 1 same, -1 opposite, 0 any zero</div>
+            <div className="text-gray-500 mb-1">aligned_sign: 1 both pos, -1 both neg, 0 else</div>
+            <div className="text-gray-500">a →</div>
+            <div className="text-gray-500 mb-1">b →</div>
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
+          </div>
+        )}
+        
+        {/* Flip - parity: -1↔1, 0→0; boolean: 0↔1 */}
+        {nodeType === 'flip' && (
+          <div className="text-xs text-gray-300">
+            <div className="text-gray-500 mb-1">
+              {data.flipMode === 'boolean' ? '0↔1' : '-1↔1, 0→0'}
+            </div>
+            <div className="text-gray-500 mb-1">input →</div>
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
+          </div>
+        )}
+        
+        {/* Parity Split - positive→first output, negative→second output */}
+        {nodeType === 'parity_split' && (
+          <div className="text-xs text-gray-300">
+            <div className="text-gray-500 mb-0.5">pos: value if &gt; 0 else 0</div>
+            <div className="text-gray-500 mb-1">neg: value if &lt; 0 else 0</div>
+            <div className="text-gray-500 mb-1">input →</div>
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
+          </div>
+        )}
+        
+        {/* Compare - a op b → 1 or 0 */}
+        {nodeType === 'compare' && (
+          <div className="text-xs text-gray-300">
+            <div className="text-gray-500 mb-1">
+              a {data.compareOp === 'gt' ? '>' : data.compareOp === 'lt' ? '<' : data.compareOp === 'gte' ? '≥' : data.compareOp === 'lte' ? '≤' : data.compareOp === 'eq' ? '=' : '≠'} b → 1 or 0
+            </div>
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
+          </div>
+        )}
+        
+        {/* Crossover - detects when fast crosses slow */}
+        {nodeType === 'crossover' && (
+          <div className="text-xs text-gray-300">
+            <div className="text-gray-500 mb-0.5">cross_above: fast↗slow</div>
+            <div className="text-gray-500 mb-1">cross_below: fast↘slow</div>
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
+          </div>
+        )}
+        
+        {/* Threshold - input vs threshold */}
+        {nodeType === 'threshold' && (
+          <div className="text-xs text-gray-300">
+            <div className="text-gray-500 mb-1">
+              {data.mode === 'below' ? `input < ${data.threshold ?? 0}` : `input > ${data.threshold ?? 0}`} → 1 or 0
+            </div>
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
+          </div>
+        )}
+        
+        {/* EMA - exponential moving average */}
+        {nodeType === 'ema' && (
+          <div className="text-xs text-gray-300">
+            <div className="text-gray-500 mb-1">Span: {data.span ?? 10}</div>
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
           </div>
         )}
         
@@ -350,7 +711,7 @@ function BaseNode({ id, data, selected, nodeType }: BaseNodeProps) {
         {nodeType === 'transpose' && (
           <div className="text-xs text-gray-300">
             <div className="mb-1 text-gray-500">Swaps (R, C) → (C, R)</div>
-            <PreviewDisplay preview={preview} color={typeDef.color} />
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
           </div>
         )}
         
@@ -359,14 +720,14 @@ function BaseNode({ id, data, selected, nodeType }: BaseNodeProps) {
           <div className="text-xs text-gray-300">
             <div className="text-gray-500">a →</div>
             <div className="text-gray-500 mb-1">b →</div>
-            <PreviewDisplay preview={preview} color={typeDef.color} scalarLabel="result" />
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} scalarLabel="result" />
           </div>
         )}
         
         {/* Aggregation ops: mean, sum, min, max - output scalar */}
         {['mean', 'sum', 'min', 'max'].includes(nodeType) && (
           <div className="text-xs text-gray-300">
-            <PreviewDisplay preview={preview} color={typeDef.color} scalarLabel={nodeType} />
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} scalarLabel={nodeType} />
           </div>
         )}
         
@@ -376,7 +737,7 @@ function BaseNode({ id, data, selected, nodeType }: BaseNodeProps) {
             <div className="mb-1 text-gray-500">
               {data.ddof === 1 ? 'Sample' : 'Population'}
             </div>
-            <PreviewDisplay preview={preview} color={typeDef.color} scalarLabel="std dev" />
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} scalarLabel="std dev" />
           </div>
         )}
         
@@ -386,7 +747,7 @@ function BaseNode({ id, data, selected, nodeType }: BaseNodeProps) {
             <div className="mb-1 text-gray-500">
               {data.ddof === 1 ? 'Sample' : 'Population'}
             </div>
-            <PreviewDisplay preview={preview} color={typeDef.color} scalarLabel="variance" />
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} scalarLabel="variance" />
           </div>
         )}
         
@@ -394,7 +755,7 @@ function BaseNode({ id, data, selected, nodeType }: BaseNodeProps) {
         {nodeType === 'normalize' && (
           <div className="text-xs text-gray-300">
             <div className="mb-1 text-gray-500">Z-score normalization</div>
-            <PreviewDisplay preview={preview} color={typeDef.color} />
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
           </div>
         )}
         
@@ -402,12 +763,17 @@ function BaseNode({ id, data, selected, nodeType }: BaseNodeProps) {
         {nodeType === 'clip' && (
           <div className="text-xs text-gray-300">
             <div className="mb-1 text-gray-500">[{data.min ?? -1}, {data.max ?? 1}]</div>
-            {/* Show scalar if shape is (1,1), otherwise sparkline */}
-            {shape && shape[0] === 1 && shape[1] === 1 ? (
-              <ScalarDisplay value={preview?.type === 'scalar' ? preview.value : (preview?.type === 'tensor' ? preview.values[0] : 0)} color={typeDef.color} />
-            ) : (
-              <PreviewDisplay preview={preview} color={typeDef.color} />
-            )}
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
+          </div>
+        )}
+        
+        {/* Round: decimals, method */}
+        {nodeType === 'round' && (
+          <div className="text-xs text-gray-300">
+            <div className="mb-1 text-gray-500">
+              {data.roundMethod === 'up' ? 'ceil' : data.roundMethod === 'down' ? 'floor' : 'round'} to {data.decimals ?? 0} decimals
+            </div>
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
           </div>
         )}
         
@@ -415,7 +781,7 @@ function BaseNode({ id, data, selected, nodeType }: BaseNodeProps) {
         {(nodeType === 'rolling_mean' || nodeType === 'rolling_std') && (
           <div className="text-xs text-gray-300">
             <div className="mb-1 text-gray-500">Window: {data.window || 10}</div>
-            <PreviewDisplay preview={preview} color={typeDef.color} />
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
           </div>
         )}
         
@@ -433,10 +799,30 @@ function BaseNode({ id, data, selected, nodeType }: BaseNodeProps) {
                 Output: len - {data.n || 1}
               </div>
             )}
-            <PreviewDisplay preview={preview} color={typeDef.color} />
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
           </div>
         )}
         
+        {/* Custom State _t (green input) */}
+        {(nodeType === 'custom_state_t') && (
+          <div className="text-xs text-gray-300">
+            <div className="text-gray-500 mb-1 font-mono text-[10px]">
+              {data.stateName || 'my_state'}_t
+            </div>
+            <div className="text-gray-600 text-[10px] mb-1">Current value (input)</div>
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
+          </div>
+        )}
+        {/* Custom State _(t+1) (red output) */}
+        {nodeType === 'custom_state_t1' && (
+          <div className="text-xs text-gray-300">
+            <div className="text-gray-500 mb-1 font-mono text-[10px]">
+              {data.stateName || 'my_state'}_(t+1)
+            </div>
+            <div className="text-gray-600 text-[10px] mb-1">New value (output) → updates state</div>
+            <div className="text-gray-500">new_value →</div>
+          </div>
+        )}
         {/* Shift-Diff: show n and mode */}
         {nodeType === 'shift_diff' && (
           <div className="text-xs text-gray-300">
@@ -446,20 +832,20 @@ function BaseNode({ id, data, selected, nodeType }: BaseNodeProps) {
             <div className="mb-1 text-gray-600 text-[10px]">
               Output: len - {data.n || 1}
             </div>
-            <PreviewDisplay preview={preview} color={typeDef.color} />
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
           </div>
         )}
         
-        {/* Conv1D Custom: show kernel and padding */}
+        {/* Conv1D Custom: kernel from input, padding option */}
         {nodeType === 'conv1d_custom' && (
           <div className="text-xs text-gray-300">
-            <div className="mb-1 text-gray-500 truncate font-mono text-[10px]">
-              kernel: [{data.kernel || '0.25, 0.5, 0.25'}]
+            <div className="mb-1 text-gray-500 text-[10px]">
+              kernel: from input
             </div>
             <div className="mb-1 text-gray-600 text-[10px]">
               {data.padding === 'same' ? 'Same (preserve len)' : 'Valid (shorter)'}
             </div>
-            <PreviewDisplay preview={preview} color={typeDef.color} />
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
           </div>
         )}
         
@@ -467,14 +853,14 @@ function BaseNode({ id, data, selected, nodeType }: BaseNodeProps) {
         {nodeType === 'linear' && (
           <div className="text-xs text-gray-300">
             <div className="mb-1 text-gray-500">{data.inFeatures || 10} → {data.outFeatures || 1}</div>
-            <PreviewDisplay preview={preview} color={typeDef.color} />
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
           </div>
         )}
         
         {/* Activation functions */}
         {['relu', 'tanh', 'sigmoid', 'softmax'].includes(nodeType) && (
           <div className="text-xs text-gray-300">
-            <PreviewDisplay preview={preview} color={typeDef.color} />
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
           </div>
         )}
         
@@ -484,7 +870,7 @@ function BaseNode({ id, data, selected, nodeType }: BaseNodeProps) {
             <div className="mb-1 text-gray-500">Hidden: {data.hiddenSize || 32}</div>
             <div className="text-gray-500">output →</div>
             <div className="text-gray-500">hidden →</div>
-            <PreviewDisplay preview={preview} color={typeDef.color} />
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
           </div>
         )}
         
@@ -493,7 +879,7 @@ function BaseNode({ id, data, selected, nodeType }: BaseNodeProps) {
           <div className="text-xs text-gray-300">
             <div className="text-gray-500">{data.inChannels || 1} → {data.outChannels || 16}</div>
             <div className="text-gray-500 mb-1">kernel: {data.kernelSize || 3}</div>
-            <PreviewDisplay preview={preview} color={typeDef.color} />
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
           </div>
         )}
         
@@ -501,7 +887,7 @@ function BaseNode({ id, data, selected, nodeType }: BaseNodeProps) {
         {nodeType === 'rsi' && (
           <div className="text-xs text-gray-300">
             <div className="mb-1 text-gray-500">Period: {data.period || 14}</div>
-            <PreviewDisplay preview={preview} color={typeDef.color} />
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
           </div>
         )}
         
@@ -511,7 +897,7 @@ function BaseNode({ id, data, selected, nodeType }: BaseNodeProps) {
             <div className="text-gray-500 mb-1">
               {data.fastPeriod || 12}/{data.slowPeriod || 26}/{data.signalPeriod || 9}
             </div>
-            <PreviewDisplay preview={preview} color={typeDef.color} />
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
           </div>
         )}
         
@@ -521,7 +907,7 @@ function BaseNode({ id, data, selected, nodeType }: BaseNodeProps) {
             <div className="text-gray-500 mb-1">
               Period: {data.period || 20}, σ: {data.stdDev || 2}
             </div>
-            <PreviewDisplay preview={preview} color={typeDef.color} />
+            <SmartPreviewDisplay preview={preview} shape={shape} color={typeDef.color} sparklineType={sparklineType} />
           </div>
         )}
         
@@ -530,11 +916,21 @@ function BaseNode({ id, data, selected, nodeType }: BaseNodeProps) {
           <div className="text-xs">
             <div className="text-gray-400 mb-1">{data.description || 'Position delta'}</div>
             <div className="text-gray-500 mb-1">input →</div>
-            <PreviewDisplay 
+            <SmartPreviewDisplay 
               preview={preview} 
+              shape={shape}
               color="#22c55e" 
               scalarLabel="shares"
             />
+          </div>
+        )}
+        
+        {/* View Output - meter/debugger: sparkline, scalar, or 2D heatmap */}
+        {nodeType === 'view_output' && (
+          <div className="text-xs">
+            <div className="text-gray-400 mb-1">{data.description || 'Meter / debugger'}</div>
+            <div className="text-gray-500 mb-1">input →</div>
+            <ViewOutputDisplay preview={preview} shape={shape} color={typeDef.color} width={140} height={80} />
           </div>
         )}
       </div>
@@ -625,6 +1021,10 @@ export const RangeNode = memo((props: NodeProps) => (
   <BaseNode {...props} nodeType="range" />
 ));
 
+export const TimestampNode = memo((props: NodeProps) => (
+  <BaseNode {...props} nodeType="timestamp" />
+));
+
 export const AgentStateNode = memo((props: NodeProps) => (
   <BaseNode {...props} nodeType="agent_state" />
 ));
@@ -663,6 +1063,46 @@ export const AddNode = memo((props: NodeProps) => (
 
 export const SubtractNode = memo((props: NodeProps) => (
   <BaseNode {...props} nodeType="subtract" />
+));
+
+export const AbsNode = memo((props: NodeProps) => (
+  <BaseNode {...props} nodeType="abs" />
+));
+
+export const ParityCheckNode = memo((props: NodeProps) => (
+  <BaseNode {...props} nodeType="parity_check" />
+));
+
+export const FlipNode = memo((props: NodeProps) => (
+  <BaseNode {...props} nodeType="flip" />
+));
+
+export const ParitySplitNode = memo((props: NodeProps) => (
+  <BaseNode {...props} nodeType="parity_split" />
+));
+
+export const CompareNode = memo((props: NodeProps) => (
+  <BaseNode {...props} nodeType="compare" />
+));
+
+export const CrossoverNode = memo((props: NodeProps) => (
+  <BaseNode {...props} nodeType="crossover" />
+));
+
+export const ThresholdNode = memo((props: NodeProps) => (
+  <BaseNode {...props} nodeType="threshold" />
+));
+
+export const EmaNode = memo((props: NodeProps) => (
+  <BaseNode {...props} nodeType="ema" />
+));
+
+export const CustomStateTNode = memo((props: NodeProps) => (
+  <BaseNode {...props} nodeType="custom_state_t" />
+));
+
+export const CustomStateT1Node = memo((props: NodeProps) => (
+  <BaseNode {...props} nodeType="custom_state_t1" />
 ));
 
 export const MultiplyNode = memo((props: NodeProps) => (
@@ -711,6 +1151,10 @@ export const NormalizeNode = memo((props: NodeProps) => (
 
 export const ClipNode = memo((props: NodeProps) => (
   <BaseNode {...props} nodeType="clip" />
+));
+
+export const RoundNode = memo((props: NodeProps) => (
+  <BaseNode {...props} nodeType="round" />
 ));
 
 export const RollingMeanNode = memo((props: NodeProps) => (
@@ -777,6 +1221,10 @@ export const OutputNode = memo((props: NodeProps) => (
   <BaseNode {...props} nodeType="output" />
 ));
 
+export const ViewOutputNode = memo((props: NodeProps) => (
+  <BaseNode {...props} nodeType="view_output" />
+));
+
 // Export all node types as a map for ReactFlow
 export const nodeTypes = {
   // Data Sources
@@ -784,9 +1232,12 @@ export const nodeTypes = {
   constant: ConstantNode,
   variable: VariableNode,
   range: RangeNode,
+  timestamp: TimestampNode,
   agent_state: AgentStateNode,
   agent_equity_curve: AgentEquityCurveNode,
   custom_state: CustomStateNode,
+  custom_state_t: CustomStateTNode,
+  custom_state_t1: CustomStateT1Node,
   // 1-D Transformations
   slice: SliceNode,
   sign: SignNode,
@@ -794,10 +1245,19 @@ export const nodeTypes = {
   cos: CosNode,
   add: AddNode,
   subtract: SubtractNode,
+  abs: AbsNode,
+  parity_check: ParityCheckNode,
+  flip: FlipNode,
+  parity_split: ParitySplitNode,
+  compare: CompareNode,
+  crossover: CrossoverNode,
+  threshold: ThresholdNode,
+  ema: EmaNode,
   multiply: MultiplyNode,
   divide: DivideNode,
   normalize: NormalizeNode,
   clip: ClipNode,
+  round: RoundNode,
   rolling_mean: RollingMeanNode,
   rolling_std: RollingStdNode,
   shift: ShiftNode,
@@ -827,4 +1287,5 @@ export const nodeTypes = {
   conv1d: Conv1dNode,
   // Output
   output: OutputNode,
+  view_output: ViewOutputNode,
 };

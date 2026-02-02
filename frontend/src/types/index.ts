@@ -77,7 +77,7 @@ export interface JobStatus {
   progress_percent?: number;
   bars: BarData[];
   trades: TradeEvent[];
-  equity_curve: { time: string; equity: number }[];
+  equity_curve: { time: string; equity: number; position?: number; cash?: number; close?: number }[];
   final_result?: {
     success?: boolean;
     error?: string;
@@ -93,6 +93,7 @@ export interface JobStatus {
     signal_ids?: string[];
     symbol?: string;
     all_bars?: any[];
+    portfolio_curve?: { time: string; equity: number; position: number; cash: number; close: number }[];
   };
 }
 
@@ -210,6 +211,7 @@ export type VisualNodeType =
   | 'constant'
   | 'variable'
   | 'range'
+  | 'timestamp'
   // 1-D Transformations
   | 'slice'
   | 'add'
@@ -218,11 +220,20 @@ export type VisualNodeType =
   | 'divide'
   | 'normalize'
   | 'clip'
+  | 'round'
   | 'rolling_mean'
   | 'rolling_std'
   | 'shift'
   | 'shift_diff'
   | 'conv1d_custom'
+  | 'abs'
+  | 'parity_check'
+  | 'flip'
+  | 'parity_split'
+  | 'compare'
+  | 'crossover'
+  | 'threshold'
+  | 'ema'
   | 'sign'
   | 'sin'
   | 'cos'
@@ -230,6 +241,8 @@ export type VisualNodeType =
   | 'agent_state'
   | 'agent_equity_curve'
   | 'custom_state'
+  | 'custom_state_t'
+  | 'custom_state_t1'
   | 'rsi'
   | 'macd'
   | 'bollinger'
@@ -253,12 +266,13 @@ export type VisualNodeType =
   | 'lstm'
   | 'conv1d'
   // Output
-  | 'output';
+  | 'output'
+  | 'view_output';
 
 export interface NodeTypeDefinition {
   type: VisualNodeType;
   label: string;
-  category: 'data' | 'transform1d' | 'aggregation' | 'transformNd' | 'ml' | 'output';
+  category: 'data' | 'scalar' | 'transform1d' | 'aggregation' | 'transformNd' | 'ml' | 'output';
   inputs: { name: string; type: string }[];
   outputs: { name: string; type: string }[];
   defaultData: Record<string, any>;

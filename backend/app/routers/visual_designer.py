@@ -379,9 +379,9 @@ async def deploy_design(design_id: int, request: VisualDesignDeployRequest):
         description = request.description or f"Visual design: {design_name}"
         path = f"db://agents/{agent_name}"
         
+        # First, create/update agent and commit
         with get_pg_conn() as conn:
             with conn.cursor() as cur:
-                # Create/update agent
                 cur.execute(
                     """
                     INSERT INTO agents_registry (name, path, code, description, enabled)
@@ -393,8 +393,11 @@ async def deploy_design(design_id: int, request: VisualDesignDeployRequest):
                     """,
                     (agent_name, path, result.code, description)
                 )
-                
-                # Update design with agent link and generated code
+            conn.commit()
+        
+        # Then update design with agent link (agent now exists due to commit above)
+        with get_pg_conn() as conn:
+            with conn.cursor() as cur:
                 cur.execute(
                     """
                     UPDATE visual_agent_designs 

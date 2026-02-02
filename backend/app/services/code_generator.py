@@ -3,7 +3,7 @@
 Converts a visual graph (nodes + edges) into executable Python agent code.
 """
 
-from typing import Dict, List, Any, Set, Tuple
+from typing import Dict, List, Any, Set, Tuple, Union
 from collections import defaultdict
 from app.models.schemas import CodeGenerationResponse
 
@@ -31,6 +31,11 @@ NODE_TYPES = {
         "outputs": ["value"],
         "category": "data",
     },
+    "timestamp": {
+        "inputs": [],
+        "outputs": ["year", "month", "weeknumber", "day_of_week", "hour", "timestamp_seconds"],
+        "category": "data",
+    },
     "agent_state": {
         "inputs": [],
         "outputs": ["shares", "equity", "cash"],
@@ -46,8 +51,58 @@ NODE_TYPES = {
         "outputs": ["value"],
         "category": "data",
     },
+    "custom_state_t": {
+        "inputs": [],
+        "outputs": ["value"],
+        "category": "data",
+    },
+    "custom_state_t1": {
+        "inputs": ["new_value"],
+        "outputs": [],
+        "category": "data",
+    },
     
     # Operations
+    "abs": {
+        "inputs": ["input"],
+        "outputs": ["output"],
+        "category": "operation",
+    },
+    "parity_check": {
+        "inputs": ["a", "b"],
+        "outputs": ["parity", "aligned_sign"],
+        "category": "scalar",  # Scalar-to-scalar operation
+    },
+    "flip": {
+        "inputs": ["input"],
+        "outputs": ["output"],
+        "category": "scalar",
+    },
+    "parity_split": {
+        "inputs": ["input"],
+        "outputs": ["positive", "negative"],
+        "category": "scalar",
+    },
+    "compare": {
+        "inputs": ["a", "b"],
+        "outputs": ["output"],
+        "category": "scalar",
+    },
+    "crossover": {
+        "inputs": ["fast", "slow"],
+        "outputs": ["cross_above", "cross_below"],
+        "category": "scalar",
+    },
+    "threshold": {
+        "inputs": ["input"],
+        "outputs": ["output"],
+        "category": "scalar",
+    },
+    "ema": {
+        "inputs": ["input"],
+        "outputs": ["output"],
+        "category": "operation",
+    },
     "sign": {
         "inputs": ["input"],
         "outputs": ["output"],
@@ -143,6 +198,11 @@ NODE_TYPES = {
         "outputs": ["output"],
         "category": "operation",
     },
+    "round": {
+        "inputs": ["input"],
+        "outputs": ["output"],
+        "category": "operation",
+    },
     
     # Technical indicators
     "rolling_mean": {
@@ -229,6 +289,11 @@ NODE_TYPES = {
         "outputs": [],
         "category": "output",
     },
+    "view_output": {
+        "inputs": ["input"],
+        "outputs": [],
+        "category": "output",
+    },
 }
 
 
@@ -269,10 +334,25 @@ def topological_sort(nodes: List[Dict], edges: List[Dict]) -> Tuple[List[str], L
     return sorted_nodes, errors
 
 
-def generate_node_code(node: Dict, input_vars: Dict[str, str]) -> Tuple[str, str, List[str]]:
+def _parse_num(data: dict, key: str, default, as_int: bool = True):
+    """Parse numeric value from node data (may be string from frontend text inputs)."""
+    v = data.get(key, default)
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return int(v) if as_int else float(v)
+    if isinstance(v, str):
+        try:
+            f = float(v)
+            return int(f) if as_int else f
+        except (TypeError, ValueError):
+            return default
+    return default
+
+
+def generate_node_code(node: Dict, input_vars: Dict[str, str]) -> Tuple[Union[str, Dict[str, str]], str, List[str]]:
     """
     Generate Python code for a single node.
-    Returns (output_var_name, code_line, errors).
+    Returns (output_var_name_or_dict, code_line, errors).
+    For single-output: str. For multi-output (e.g. parity_check): Dict[handle, var_name].
     """
     node_id = node["id"]
     node_type = node.get("type", "unknown")
@@ -288,7 +368,7 @@ def generate_node_code(node: Dict, input_vars: Dict[str, str]) -> Tuple[str, str
         return var_name, code, errors
     
     elif node_type == "constant":
-        value = data.get("value", 0)
+        value = _parse_num(data, "value", 0, as_int=False)
         shape = data.get("shape", [1])
         if isinstance(shape, list) and len(shape) > 1:
             code = f'{var_name} = torch.full({tuple(shape)}, {value}, dtype=torch.float32)'
@@ -311,29 +391,53 @@ def generate_node_code(node: Dict, input_vars: Dict[str, str]) -> Tuple[str, str
         code = f'{var_name} = self._get_or_init_param("{name}", lambda: {init_code})'
         return var_name, code, errors
     
+    elif node_type == "timestamp":
+        # Extract year, month, weeknumber, day_of_week, hour, timestamp_seconds from current bar
+        code = f'''_ts_raw = int(history["timestamp"].iloc[-1])
+_ts_sec = _ts_raw // 1000 if _ts_raw > 1e12 else _ts_raw  # Support ms or s
+_from_dt = __import__("datetime").datetime.fromtimestamp(_ts_sec)
+{var_name}_year = torch.tensor(_from_dt.year, dtype=torch.float32)
+{var_name}_month = torch.tensor(_from_dt.month, dtype=torch.float32)
+{var_name}_weeknumber = torch.tensor(_from_dt.isocalendar()[1], dtype=torch.float32)
+{var_name}_day_of_week = torch.tensor(_from_dt.weekday(), dtype=torch.float32)  # 0=Mon, 6=Sun
+{var_name}_hour = torch.tensor(_from_dt.hour, dtype=torch.float32)
+{var_name}_timestamp_seconds = torch.tensor(float(_ts_sec), dtype=torch.float32)'''
+        return {
+            "year": f"{var_name}_year",
+            "month": f"{var_name}_month",
+            "weeknumber": f"{var_name}_weeknumber",
+            "day_of_week": f"{var_name}_day_of_week",
+            "hour": f"{var_name}_hour",
+            "timestamp_seconds": f"{var_name}_timestamp_seconds",
+        }, code, errors
+    
     elif node_type == "range":
-        n = data.get("n", 10)
-        start = data.get("start", 0)
+        n = _parse_num(data, "n", 10)
+        start = _parse_num(data, "start", 0, as_int=False)
         mode = data.get("mode", "step")
         
         if mode == "end":
-            end = data.get("end", 10)
+            end = _parse_num(data, "end", 10, as_int=False)
             code = f'{var_name} = torch.linspace({start}, {end}, {n}, dtype=torch.float32)'
         else:  # step mode
-            step = data.get("step", 1)
-            code = f'{var_name} = torch.arange({start}, {start} + {n} * {step}, {step}, dtype=torch.float32)[:, {n}]'
+            step = _parse_num(data, "step", 1, as_int=False)
+            code = f'{var_name} = torch.arange({start}, {start} + {n} * {step}, {step}, dtype=torch.float32)[:{n}]'
         return var_name, code, errors
     
     elif node_type == "agent_state":
-        # Returns shares, equity, cash from the agent's current state
-        code = f'''{var_name}_shares = self.position  # Current shares held
-{var_name}_equity = self.equity  # Current total equity
-{var_name}_cash = self.cash  # Current cash'''
-        return var_name + "_shares", code, errors  # Returns shares as primary output
+        # Returns shares, equity, cash from the agent's current state (each output is a scalar)
+        code = f'''{var_name}_shares = torch.tensor(state["position"], dtype=torch.float32)  # Current shares held
+{var_name}_equity = torch.tensor(state["equity"], dtype=torch.float32)  # Current total equity
+{var_name}_cash = torch.tensor(state["cash"], dtype=torch.float32)  # Current cash'''
+        return {"shares": f"{var_name}_shares", "equity": f"{var_name}_equity", "cash": f"{var_name}_cash"}, code, errors
     
     elif node_type == "agent_equity_curve":
-        history_length = data.get("historyLength", 50)
-        code = f'{var_name} = torch.tensor(self.equity_history[-{history_length}:], dtype=torch.float32) if hasattr(self, "equity_history") else torch.zeros({history_length})'
+        history_length = _parse_num(data, "historyLength", 50)
+        # Build equity history from portfolio_history if available
+        code = f'''_equity_hist = [h.get("equity", state["equity"]) for h in ib._env.portfolio_history[-{history_length}:]] if hasattr(ib, "_env") and hasattr(ib._env, "portfolio_history") else []
+if len(_equity_hist) < {history_length}:
+    _equity_hist = [state["equity"]] * ({history_length} - len(_equity_hist)) + _equity_hist
+{var_name} = torch.tensor(_equity_hist, dtype=torch.float32)'''
         return var_name, code, errors
     
     elif node_type == "custom_state":
@@ -348,7 +452,7 @@ def generate_node_code(node: Dict, input_vars: Dict[str, str]) -> Tuple[str, str
                 default_tensor = f"torch.tensor({values[0]}, dtype=torch.float32)"
             else:
                 default_tensor = f"torch.tensor([{', '.join(str(v) for v in values)}], dtype=torch.float32)"
-        except:
+        except Exception:
             default_tensor = "torch.tensor(0.0, dtype=torch.float32)"
         
         if new_value_var:
@@ -363,7 +467,84 @@ self.{state_name} = torch.as_tensor({new_value_var}, dtype=torch.float32)
     self.{state_name} = {default_tensor}
 {var_name} = self.{state_name}'''
         return var_name, code, errors
+
+    elif node_type == "custom_state_t":
+        state_name = data.get("stateName", "my_state")
+        default_value = data.get("defaultValue", "0")
+        try:
+            values = [float(x.strip()) for x in str(default_value).split(",")]
+            if len(values) == 1:
+                default_tensor = f"torch.tensor({values[0]}, dtype=torch.float32)"
+            else:
+                default_tensor = f"torch.tensor([{', '.join(str(v) for v in values)}], dtype=torch.float32)"
+        except Exception:
+            default_tensor = "torch.tensor(0.0, dtype=torch.float32)"
+        code = f'''if not hasattr(self, "{state_name}"):
+    self.{state_name} = {default_tensor}
+{var_name} = self.{state_name}'''
+        return var_name, code, errors
+
+    elif node_type == "custom_state_t1":
+        # No output variable; state update is recorded and emitted at end of on_bar
+        state_name = data.get("stateName", "my_state")
+        new_value_var = input_vars.get("new_value")
+        if not new_value_var:
+            errors.append("Custom State (t+1) node requires a connection to its 'new_value' input")
+        # Return empty code; state update will be collected by caller
+        return None, "", errors
     
+    elif node_type == "abs":
+        input_var = input_vars.get("input", "None")
+        code = f'{var_name} = torch.abs(torch.as_tensor({input_var}, dtype=torch.float32))'
+        return var_name, code, errors
+
+    elif node_type == "parity_check":
+        # Scalar category: coerce inputs to scalars
+        a = input_vars.get("a", "0")
+        b = input_vars.get("b", "0")
+        code = f'{var_name}_parity, {var_name}_aligned = self._parity_check(torch.as_tensor({a}, dtype=torch.float32).flatten()[-1].item(), torch.as_tensor({b}, dtype=torch.float32).flatten()[-1].item())'
+        # Return dict for multi-output; caller will handle output_vars by handle
+        return {"parity": f"{var_name}_parity", "aligned_sign": f"{var_name}_aligned"}, code, errors
+
+    elif node_type == "flip":
+        input_var = input_vars.get("input", "0")
+        flip_mode = data.get("flipMode", "parity")
+        code = f'{var_name} = self._flip(torch.as_tensor({input_var}, dtype=torch.float32).flatten()[-1].item(), "{flip_mode}")'
+        return var_name, code, errors
+
+    elif node_type == "parity_split":
+        input_var = input_vars.get("input", "0")
+        code = f'{var_name}_pos, {var_name}_neg = self._parity_split(torch.as_tensor({input_var}, dtype=torch.float32).flatten()[-1].item())'
+        return {"positive": f"{var_name}_pos", "negative": f"{var_name}_neg"}, code, errors
+
+    elif node_type == "compare":
+        a = input_vars.get("a", "0")
+        b = input_vars.get("b", "0")
+        compare_op = data.get("compareOp", "gt")
+        code = f'{var_name} = self._compare(torch.as_tensor({a}, dtype=torch.float32).flatten()[-1].item(), torch.as_tensor({b}, dtype=torch.float32).flatten()[-1].item(), "{compare_op}")'
+        return var_name, code, errors
+
+    elif node_type == "crossover":
+        fast = input_vars.get("fast", "0")
+        slow = input_vars.get("slow", "0")
+        # Use unique key per crossover node to support multiple instances
+        state_key = f"crossover_{node_id}"
+        code = f'{var_name}_above, {var_name}_below = self._crossover(torch.as_tensor({fast}, dtype=torch.float32).flatten()[-1].item(), torch.as_tensor({slow}, dtype=torch.float32).flatten()[-1].item(), "{state_key}")'
+        return {"cross_above": f"{var_name}_above", "cross_below": f"{var_name}_below"}, code, errors
+
+    elif node_type == "threshold":
+        input_var = input_vars.get("input", "0")
+        threshold_val = _parse_num(data, "threshold", 0, as_int=False)
+        mode = data.get("mode", "above")
+        code = f'{var_name} = self._threshold(torch.as_tensor({input_var}, dtype=torch.float32).flatten()[-1].item(), {threshold_val}, "{mode}")'
+        return var_name, code, errors
+
+    elif node_type == "ema":
+        input_var = input_vars.get("input", "None")
+        span = _parse_num(data, "span", 10)
+        code = f'{var_name} = self._ema({input_var}, {span})'
+        return var_name, code, errors
+
     elif node_type == "sign":
         input_var = input_vars.get("input", "None")
         code = f'{var_name} = torch.sign(torch.as_tensor({input_var}, dtype=torch.float32))'
@@ -381,8 +562,8 @@ self.{state_name} = torch.as_tensor({new_value_var}, dtype=torch.float32)
     
     elif node_type == "slice":
         input_var = input_vars.get("input", "None")
-        n = data.get("n", 10)
-        m = data.get("m", 0)
+        n = _parse_num(data, "n", 10)
+        m = _parse_num(data, "m", 0)
         if m == 0:
             # Slice from -n to end
             code = f'{var_name} = {input_var}[-{n}:] if len({input_var}) >= {n} else {input_var}'
@@ -392,7 +573,7 @@ self.{state_name} = torch.as_tensor({new_value_var}, dtype=torch.float32)
         return var_name, code, errors
     
     elif node_type == "concat":
-        num_inputs = data.get("numInputs", 2)
+        num_inputs = _parse_num(data, "numInputs", 2)
         axis = data.get("axis", 0)
         # Gather all inputs dynamically
         inputs_list = []
@@ -412,10 +593,26 @@ self.{state_name} = torch.as_tensor({new_value_var}, dtype=torch.float32)
         code = f'{var_name} = torch.as_tensor({input_var}).T'
         return var_name, code, errors
     
-    elif node_type in ["add", "subtract", "multiply", "divide"]:
+    elif node_type == "add":
         a = input_vars.get("a", "0")
         b = input_vars.get("b", "0")
-        ops = {"add": "+", "subtract": "-", "multiply": "*", "divide": "/"}
+        code = f'{var_name} = torch.as_tensor({a}) + torch.as_tensor({b})'
+        return var_name, code, errors
+
+    elif node_type == "subtract":
+        a = input_vars.get("a", "0")
+        b = input_vars.get("b", "0")
+        subtract_mode = data.get("subtractMode", "difference")
+        if subtract_mode == "ratio":
+            code = f'_b = torch.as_tensor({b}); {var_name} = (torch.as_tensor({a}) - _b) / (torch.where(_b == 0, torch.ones_like(_b), _b))'
+        else:
+            code = f'{var_name} = torch.as_tensor({a}) - torch.as_tensor({b})'
+        return var_name, code, errors
+
+    elif node_type in ["multiply", "divide"]:
+        a = input_vars.get("a", "0")
+        b = input_vars.get("b", "0")
+        ops = {"multiply": "*", "divide": "/"}
         code = f'{var_name} = torch.as_tensor({a}) {ops[node_type]} torch.as_tensor({b})'
         return var_name, code, errors
     
@@ -437,14 +634,14 @@ self.{state_name} = torch.as_tensor({new_value_var}, dtype=torch.float32)
     
     elif node_type == "std":
         input_var = input_vars.get("input", "None")
-        ddof = data.get("ddof", 0)  # 0 = population, 1 = sample
+        ddof = _parse_num(data, "ddof", 0)  # 0 = population, 1 = sample
         correction_str = f"correction={ddof}"
         code = f'{var_name} = torch.as_tensor({input_var}, dtype=torch.float32).std({correction_str})'
         return var_name, code, errors
     
     elif node_type == "variance":
         input_var = input_vars.get("input", "None")
-        ddof = data.get("ddof", 0)  # 0 = population, 1 = sample
+        ddof = _parse_num(data, "ddof", 0)  # 0 = population, 1 = sample
         correction_str = f"correction={ddof}"
         code = f'{var_name} = torch.as_tensor({input_var}, dtype=torch.float32).var({correction_str})'
         return var_name, code, errors
@@ -456,45 +653,60 @@ self.{state_name} = torch.as_tensor({new_value_var}, dtype=torch.float32)
     
     elif node_type == "clip":
         input_var = input_vars.get("input", "None")
-        min_val = data.get("min", -float("inf"))
-        max_val = data.get("max", float("inf"))
+        min_val = _parse_num(data, "min", -float("inf"), as_int=False)
+        max_val = _parse_num(data, "max", float("inf"), as_int=False)
         code = f'{var_name} = torch.clamp(torch.as_tensor({input_var}), {min_val}, {max_val})'
+        return var_name, code, errors
+    
+    elif node_type == "round":
+        input_var = input_vars.get("input", "None")
+        decimals = _parse_num(data, "decimals", 0)
+        method = data.get("roundMethod", "nearest")
+        factor = 10 ** decimals
+        if method == "up":
+            code = f'{var_name} = torch.ceil(torch.as_tensor({input_var}, dtype=torch.float32) * {factor}) / {factor}'
+        elif method == "down":
+            code = f'{var_name} = torch.floor(torch.as_tensor({input_var}, dtype=torch.float32) * {factor}) / {factor}'
+        else:
+            code = f'{var_name} = torch.round(torch.as_tensor({input_var}, dtype=torch.float32) * {factor}) / {factor}'
         return var_name, code, errors
     
     elif node_type == "rolling_mean":
         input_var = input_vars.get("input", "None")
-        window = data.get("window", 10)
+        window = _parse_num(data, "window", 10)
         code = f'{var_name} = self._rolling_mean({input_var}, {window})'
         return var_name, code, errors
     
     elif node_type == "rolling_std":
         input_var = input_vars.get("input", "None")
-        window = data.get("window", 10)
+        window = _parse_num(data, "window", 10)
         code = f'{var_name} = self._rolling_std({input_var}, {window})'
         return var_name, code, errors
     
     elif node_type == "shift":
         input_var = input_vars.get("input", "None")
-        n = data.get("n", 1)
+        n = _parse_num(data, "n", 1)
         fill_mode = data.get("fillMode", "zero")
         code = f'{var_name} = self._shift({input_var}, {n}, fill_mode="{fill_mode}")'
         return var_name, code, errors
     
     elif node_type == "shift_diff":
         input_var = input_vars.get("input", "None")
-        n = data.get("n", 1)
+        n = _parse_num(data, "n", 1)
         diff_mode = data.get("diffMode", "raw")
         code = f'{var_name} = self._shift_diff({input_var}, {n}, mode="{diff_mode}")'
         return var_name, code, errors
     
     elif node_type == "conv1d_custom":
         input_var = input_vars.get("input", "None")
-        kernel_str = data.get("kernel", "0.25, 0.5, 0.25")
+        kernel_var = input_vars.get("kernel")
         padding = data.get("padding", "valid")
-        # Parse kernel string to list
-        kernel_values = [float(x.strip()) for x in kernel_str.split(",") if x.strip()]
-        kernel_list = f"[{', '.join(str(x) for x in kernel_values)}]"
-        code = f'{var_name} = self._conv1d_custom({input_var}, {kernel_list}, padding="{padding}")'
+        if not kernel_var:
+            errors.append("Convolution 1D node requires a connection to the 'kernel' input (1D vector).")
+            code = f'{var_name} = torch.zeros(1, dtype=torch.float32)  # Connect kernel input'
+            return var_name, code, errors
+        # Kernel is a 1D tensor from input; _conv1d_custom accepts tensor or list
+        code = f'{var_name} = self._conv1d_custom({input_var}, torch.as_tensor({kernel_var}, dtype=torch.float32), padding="{padding}")'
         return var_name, code, errors
     
     elif node_type == "output":
@@ -505,8 +717,8 @@ self.{state_name} = torch.as_tensor({new_value_var}, dtype=torch.float32)
     # ML layers
     elif node_type == "linear":
         input_var = input_vars.get("input", "None")
-        in_features = data.get("inFeatures", 10)
-        out_features = data.get("outFeatures", 1)
+        in_features = _parse_num(data, "inFeatures", 10)
+        out_features = _parse_num(data, "outFeatures", 1)
         layer_name = data.get("name", f"linear_{node_id}")
         code = f'{var_name} = self._get_or_init_layer("{layer_name}", lambda: torch.nn.Linear({in_features}, {out_features}))(torch.as_tensor({input_var}, dtype=torch.float32))'
         return var_name, code, errors
@@ -568,32 +780,53 @@ def generate_agent_code(
     # Build node lookup and edge lookup
     node_map = {n["id"]: n for n in nodes}
     
-    # Map: target_node_id -> { target_handle -> source_var }
-    incoming_edges: Dict[str, Dict[str, str]] = defaultdict(dict)
-    
-    # Track output variable names
-    output_vars: Dict[str, str] = {}
+    # Track output variable names: node_id -> var (single) or (node_id, handle) -> var (multi-output)
+    output_vars: Dict[str, str] = {}  # key: node_id or f"{node_id}::{handle}"
     
     # Generate code for each node in order
     code_lines = []
-    
+    state_updates: List[Tuple[str, str]] = []  # (state_name, var_name) for custom_state_t1
+
     for node_id in sorted_ids:
         node = node_map[node_id]
-        
-        # Gather input variables from incoming edges
+        node_type = node.get("type", "unknown")
+        data = node.get("data", {})
+
+        # Skip view_output - meter/debugger only, does not affect generated code
+        if node_type == "view_output":
+            continue
+
+        # Gather input variables from incoming edges (use sourceHandle for multi-output nodes)
         input_vars = {}
         for edge in edges:
             if edge.get("target") == node_id:
                 source_id = edge.get("source")
                 target_handle = edge.get("targetHandle", "input")
-                if source_id in output_vars:
-                    input_vars[target_handle] = output_vars[source_id]
-        
-        var_name, code_line, node_errors = generate_node_code(node, input_vars)
+                source_handle = edge.get("sourceHandle")
+                # Look up output: multi-output uses (node_id, handle), single uses node_id
+                out_key = f"{source_id}::{source_handle}" if source_handle else source_id
+                var_val = output_vars.get(out_key) or output_vars.get(source_id)
+                if var_val:
+                    input_vars[target_handle] = var_val
+
+        var_result, code_line, node_errors = generate_node_code(node, input_vars)
         errors.extend(node_errors)
-        
-        output_vars[node_id] = var_name
-        code_lines.append(code_line)
+
+        if node_type == "custom_state_t1":
+            state_name = data.get("stateName", "my_state")
+            new_value_var = input_vars.get("new_value")
+            if new_value_var:
+                state_updates.append((state_name, new_value_var))
+            continue
+
+        if isinstance(var_result, dict):
+            for handle, v in var_result.items():
+                output_vars[f"{node_id}::{handle}"] = v
+            output_vars[node_id] = next(iter(var_result.values()))  # primary for compat
+        elif var_result is not None:
+            output_vars[node_id] = var_result
+        if code_line:
+            code_lines.append(code_line)
     
     # Find the output node's variable
     output_var = "0"
@@ -714,8 +947,9 @@ class VisualDesignAgent(BaseAgent):
             out_idx = i - n
             if mode == "raw":
                 result[out_idx] = current - previous
-            elif mode == "percent":
-                result[out_idx] = ((current - previous) / previous * 100) if previous != 0 else 0
+            elif mode in ("percent", "ratio"):
+                # Ratio: (x(i) - x(i-n)) / x(i-n), no * 100
+                result[out_idx] = ((current - previous) / previous) if previous != 0 else 0
             elif mode == "log":
                 result[out_idx] = (torch.log(torch.tensor(current)) - torch.log(torch.tensor(previous))).item() if current > 0 and previous > 0 else 0
             elif mode == "cagr":
@@ -724,20 +958,108 @@ class VisualDesignAgent(BaseAgent):
                 result[out_idx] = current - previous
         return result
     
-    def _conv1d_custom(self, data, kernel: list, padding: str = "valid") -> torch.Tensor:
-        """Apply 1D convolution with a custom kernel."""
+    def _conv1d_custom(self, data, kernel, padding: str = "valid") -> torch.Tensor:
+        """Apply 1D convolution with a custom kernel (tensor or list)."""
         t = torch.as_tensor(data, dtype=torch.float32).view(1, 1, -1)  # (batch, channels, length)
-        k = torch.tensor(kernel, dtype=torch.float32).view(1, 1, -1)  # (out_ch, in_ch, kernel_size)
+        k = torch.as_tensor(kernel, dtype=torch.float32).view(1, 1, -1)  # (out_ch, in_ch, kernel_size)
         
         if padding == "same":
             # Calculate padding for 'same' output size
-            pad_size = (len(kernel) - 1) // 2
+            pad_size = (k.shape[-1] - 1) // 2
             result = torch.nn.functional.conv1d(t, k, padding=pad_size)
         else:
             # 'valid' padding - no padding
             result = torch.nn.functional.conv1d(t, k, padding=0)
         
         return result.view(-1)  # Flatten to 1D
+    
+    def _parity_check(self, a: float, b: float) -> Tuple[float, float]:
+        """
+        Scalar operation: Returns (parity, aligned_sign):
+        - parity: 1 same sign, -1 opposite, 0 any zero
+        - aligned_sign: 1 if both positive, -1 if both negative, 0 if opposite or any zero
+        """
+        if a == 0 or b == 0:
+            return 0.0, 0.0
+        
+        parity = 1.0 if (a > 0 and b > 0) or (a < 0 and b < 0) else -1.0
+        aligned_sign = (1.0 if a > 0 else -1.0) if parity == 1.0 else 0.0
+        
+        return parity, aligned_sign
+    
+    def _parity_split(self, x: float) -> Tuple[float, float]:
+        """
+        Split scalar by sign: (positive part, negative part).
+        - If x > 0: returns (x, 0)
+        - If x < 0: returns (0, x)
+        - If x == 0: returns (0, 0)
+        """
+        if x > 0:
+            return float(x), 0.0
+        if x < 0:
+            return 0.0, float(x)
+        return 0.0, 0.0
+    
+    def _flip(self, x: float, mode: str) -> float:
+        """
+        Flip: parity mode (-1↔1, 0→0) or boolean mode (0↔1).
+        """
+        if mode == "boolean":
+            return 1.0 if x == 0 else 0.0
+        # parity mode
+        if x == 0:
+            return 0.0
+        if x == 1 or x == -1:
+            return -x
+        return -1.0 if x > 0 else 1.0
+    
+    def _compare(self, a: float, b: float, op: str) -> float:
+        """Compare two scalars using the given operator."""
+        if op == "gt":
+            return 1.0 if a > b else 0.0
+        if op == "lt":
+            return 1.0 if a < b else 0.0
+        if op == "gte":
+            return 1.0 if a >= b else 0.0
+        if op == "lte":
+            return 1.0 if a <= b else 0.0
+        if op == "eq":
+            return 1.0 if a == b else 0.0
+        if op == "neq":
+            return 1.0 if a != b else 0.0
+        return 0.0
+    
+    def _crossover(self, fast: float, slow: float, key: str = "default") -> Tuple[float, float]:
+        """
+        Detect crossover events using internal state.
+        Returns (cross_above, cross_below): each is 1.0 if event just occurred, else 0.0.
+        key: unique identifier for each crossover instance (supports multiple crossover nodes).
+        """
+        if not hasattr(self, "_crossover_prev"):
+            self._crossover_prev = {{}}
+        prev_fast, prev_slow = self._crossover_prev.get(key, (fast, slow))
+        self._crossover_prev[key] = (fast, slow)
+        
+        cross_above = 1.0 if prev_fast <= prev_slow and fast > slow else 0.0
+        cross_below = 1.0 if prev_fast >= prev_slow and fast < slow else 0.0
+        return cross_above, cross_below
+    
+    def _threshold(self, x: float, t: float, mode: str) -> float:
+        """Return 1 if x is above (or below) threshold t, else 0."""
+        if mode == "below":
+            return 1.0 if x < t else 0.0
+        return 1.0 if x > t else 0.0
+    
+    def _ema(self, data, span: int) -> torch.Tensor:
+        """Compute exponential moving average with given span."""
+        x = torch.as_tensor(data, dtype=torch.float32).flatten()
+        if len(x) == 0:
+            return torch.tensor(0.0)
+        alpha = 2.0 / (span + 1)
+        result = [x[0].item()]
+        for i in range(1, len(x)):
+            result.append(alpha * x[i].item() + (1 - alpha) * result[-1])
+        return torch.tensor(result, dtype=torch.float32)
     
     def on_start(self, ib, contract) -> None:
         """Called at simulation start."""
@@ -754,7 +1076,8 @@ class VisualDesignAgent(BaseAgent):
         
         # Execute the generated computation graph
         try:
-{chr(10).join("            " + line for line in code_lines)}
+{chr(10).join("            " + sub for line in code_lines for sub in line.split(chr(10)))}
+{chr(10) + chr(10).join("            " + f"self.{name} = torch.as_tensor({var}, dtype=torch.float32)" for name, var in state_updates) if state_updates else ""}
             
             # Get the final output (position delta)
             delta = int(round({output_var}))

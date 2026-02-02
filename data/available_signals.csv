@@ -1,6 +1,41 @@
 id,source,spec,model_freq,description,enabled
-SPY_day_close,massive,SPY:day:1:close,1D,SPY daily close,1
-QQQ_day_close,massive,QQQ:day:1:close,1D,QQQ daily close,1
+SPY_day_close,massive,SPY:day:1:close,1D,SPY ETF daily close,1
+SPY_day_high,massive,SPY:day:1:high,1D,SPY ETF daily high,1
+SPY_day_low,massive,SPY:day:1:low,1D,SPY ETF daily low,1
+SPY_day_volume,massive,SPY:day:1:volume,1D,SPY ETF daily volume,1
+QQQ_day_close,massive,QQQ:day:1:close,1D,QQQ ETF daily close,1
+QQQ_day_high,massive,QQQ:day:1:high,1D,QQQ ETF daily high,1
+QQQ_day_low,massive,QQQ:day:1:low,1D,QQQ ETF daily low,1
+AAPL_day_close,massive,AAPL:day:1:close,1D,Apple daily close,1
+AAPL_day_high,massive,AAPL:day:1:high,1D,Apple daily high,1
+AAPL_day_low,massive,AAPL:day:1:low,1D,Apple daily low,1
+AAPL_day_volume,massive,AAPL:day:1:volume,1D,Apple daily volume,1
+MSFT_day_close,massive,MSFT:day:1:close,1D,Microsoft daily close,1
+MSFT_day_high,massive,MSFT:day:1:high,1D,Microsoft daily high,1
+MSFT_day_low,massive,MSFT:day:1:low,1D,Microsoft daily low,1
+GOOGL_day_close,massive,GOOGL:day:1:close,1D,Alphabet daily close,1
+GOOGL_day_high,massive,GOOGL:day:1:high,1D,Alphabet daily high,1
+GOOGL_day_low,massive,GOOGL:day:1:low,1D,Alphabet daily low,1
+AMZN_day_close,massive,AMZN:day:1:close,1D,Amazon daily close,1
+AMZN_day_high,massive,AMZN:day:1:high,1D,Amazon daily high,1
+AMZN_day_low,massive,AMZN:day:1:low,1D,Amazon daily low,1
+NVDA_day_close,massive,NVDA:day:1:close,1D,NVIDIA daily close,1
+NVDA_day_high,massive,NVDA:day:1:high,1D,NVIDIA daily high,1
+NVDA_day_low,massive,NVDA:day:1:low,1D,NVIDIA daily low,1
+TSLA_day_close,massive,TSLA:day:1:close,1D,Tesla daily close,1
+TSLA_day_high,massive,TSLA:day:1:high,1D,Tesla daily high,1
+TSLA_day_low,massive,TSLA:day:1:low,1D,Tesla daily low,1
+META_day_close,massive,META:day:1:close,1D,Meta daily close,1
+META_day_high,massive,META:day:1:high,1D,Meta daily high,1
+META_day_low,massive,META:day:1:low,1D,Meta daily low,1
+JPM_day_close,massive,JPM:day:1:close,1D,JPMorgan daily close,1
+GS_day_close,massive,GS:day:1:close,1D,Goldman Sachs daily close,1
+BAC_day_close,massive,BAC:day:1:close,1D,Bank of America daily close,1
+IWM_day_close,massive,IWM:day:1:close,1D,Russell 2000 ETF daily close,1
+DIA_day_close,massive,DIA:day:1:close,1D,Dow Jones ETF daily close,1
+VIX_day_close,massive,VIX:day:1:close,1D,VIX Volatility Index daily close,1
+GLD_day_close,massive,GLD:day:1:close,1D,Gold ETF daily close,1
+TLT_day_close,massive,TLT:day:1:close,1D,20+ Year Treasury ETF daily close,1
 AAPL_arq_revenue,sf1,AAPL:ARQ:revenue,1D,AAPL as-reported quarterly revenue (daily-forward-filled),1
 AAPL_mrq_assets,sf1,AAPL:MRQ:assets,1D,AAPL most-recent quarterly assets (daily-forward-filled),1
 

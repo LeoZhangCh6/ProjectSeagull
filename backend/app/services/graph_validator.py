@@ -26,6 +26,10 @@ NODE_DIMENSION_RULES = {
         "inputs": {},
         "output_dim": lambda data, inputs: [data.get("n", 10)],
     },
+    "timestamp": {
+        "inputs": {},
+        "output_dim": lambda data, inputs: ["scalar"],  # 6 scalar outputs
+    },
     "agent_state": {
         "inputs": {},
         "output_dim": lambda data, inputs: ["scalar"],  # Outputs 3 scalars
@@ -37,6 +41,46 @@ NODE_DIMENSION_RULES = {
     "custom_state": {
         "inputs": {"new_value": "optional"},
         "output_dim": lambda data, inputs: data.get("shape", [1]),
+    },
+    "custom_state_t": {
+        "inputs": {},
+        "output_dim": lambda data, inputs: data.get("shape", [1]),
+    },
+    "custom_state_t1": {
+        "inputs": {"new_value": "required"},
+        "output_dim": lambda data, inputs: [],
+    },
+    "abs": {
+        "inputs": {"input": "any"},
+        "output_dim": lambda data, inputs: inputs.get("input", ["T"]),
+    },
+    "parity_check": {
+        "inputs": {"a": "any", "b": "any"},  # Coerce to scalar
+        "output_dim": lambda data, inputs: ["scalar"],  # Always scalar output
+    },
+    "flip": {
+        "inputs": {"input": "any"},  # Coerce to scalar
+        "output_dim": lambda data, inputs: ["scalar"],
+    },
+    "parity_split": {
+        "inputs": {"input": "any"},  # Coerce to scalar
+        "output_dim": lambda data, inputs: ["scalar"],  # Both outputs are scalars
+    },
+    "compare": {
+        "inputs": {"a": "any", "b": "any"},  # Coerce to scalar
+        "output_dim": lambda data, inputs: ["scalar"],
+    },
+    "crossover": {
+        "inputs": {"fast": "any", "slow": "any"},  # Coerce to scalar
+        "output_dim": lambda data, inputs: ["scalar"],  # Both outputs are scalars
+    },
+    "threshold": {
+        "inputs": {"input": "any"},  # Coerce to scalar
+        "output_dim": lambda data, inputs: ["scalar"],
+    },
+    "ema": {
+        "inputs": {"input": "any"},
+        "output_dim": lambda data, inputs: inputs.get("input", ["T"]),
     },
     "sign": {
         "inputs": {"input": "any"},
@@ -114,6 +158,10 @@ NODE_DIMENSION_RULES = {
         "inputs": {"input": "any"},
         "output_dim": lambda data, inputs: inputs.get("input", ["T"]),
     },
+    "round": {
+        "inputs": {"input": "any"},
+        "output_dim": lambda data, inputs: inputs.get("input", ["T"]),
+    },
     "rolling_mean": {
         "inputs": {"input": "any"},
         "output_dim": lambda data, inputs: inputs.get("input", ["T"]),
@@ -131,7 +179,7 @@ NODE_DIMENSION_RULES = {
         "output_dim": lambda data, inputs: ["T-n"],  # Output is shorter by n elements
     },
     "conv1d_custom": {
-        "inputs": {"input": "any"},
+        "inputs": {"input": "any", "kernel": "any"},
         "output_dim": lambda data, inputs: inputs.get("input", ["T"]) if data.get("padding") == "same" else ["T-k+1"],
     },
     "linear": {
@@ -157,6 +205,10 @@ NODE_DIMENSION_RULES = {
     "output": {
         "inputs": {"input": "scalar"},
         "output_dim": lambda data, inputs: ["scalar"],
+    },
+    "view_output": {
+        "inputs": {},  # Meter/debugger - optional input, no required connections
+        "output_dim": lambda data, inputs: [],  # Sink - no output
     },
 }
 
